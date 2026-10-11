@@ -33,8 +33,11 @@ i18n layer unless asked. Sizes/speeds use German decimal comma (`fmt_size`,
   pending repaint would otherwise present a blank window).
 - **Never delete data.** No `--delete` anywhere, ever. Conflicts default to
   Skip. The self-copy-loop guard (`args::overlaps`) must stay.
-- **Single instance.** `flock` on `~/.local/state/filetransfer.lock`; a
-  second launch shows a notice instead of racing rsyncs.
+- **One destination at a time.** Multiple windows may run in parallel, but a
+  destination being written is claimed in
+  `~/.local/state/filetransfer.job.<pid>` (pid-liveness based, self-cleaning
+  — no flock); a second window picking the same destination gets a warning
+  it can override. Never reintroduce a global single-instance lock.
 - **The Plan is the single source of truth** for what runs. See
   `conflicts.rs`: `Plan.items` (every copy), `Plan.engine` (indices of
   non-rsync items), `rsync_a_srcs` (new/merge/resume) vs `rsync_b_srcs`
@@ -66,13 +69,13 @@ mode so no dialog blocks the run: launch the binary, then
 `spectacle -b -n -o /tmp/opencode/shots/x.png` (full screen, no GUI, no
 notification), read the PNG. Mouse clicks/moves for driving the UI can be
 scripted via a tiny XTEST helper compiled ad hoc (`-lX11 -lXtst`). Kill the
-instance before the next run (single-instance lock).
+instance before the next run (overlapping windows confuse screenshots).
 
 ## Module map
 
 | File | Responsibility |
 |---|---|
-| `main.rs` | argv, instance lock, eframe bootstrap, programmatic icon |
+| `main.rs` | argv, eframe bootstrap, programmatic icon |
 | `ui.rs` | all screens + theme. The only file that should contain layout/colors |
 | `args.rs` | source validation (off-thread), overlap guard |
 | `dest.rs` | location discovery from mountinfo, background listing/mkdir, rfd pickers |
@@ -81,13 +84,13 @@ instance before the next run (single-instance lock).
 | `verify.rs` | post-copy check: every file re-read on both sides, streamed SHA-256 compare with byte-accurate progress (no rsync — its progress2 doesn't tick for single big files) |
 | `fsutil.rs` | statfs probe (`FsKind::Fat/ExFat/Posix`), mountinfo parse, human formatting |
 | `state.rs` | persisted settings `~/.local/state/filetransfer.last` (key=value: dest/verify/autoclose) |
-| `log.rs` | state paths, log, `InstanceLock` |
+| `log.rs` | state paths, log, `DestClaim` (per-destination claims) |
 | `selftest.rs` | the headless pipeline test |
 
 ## UI flow and state machine
 
 `Screen`: Intake → Startup → Pick → (Conflicts) → Transfer → Summary, plus
-Fatal / AlreadyRunning notices. All screen state lives in `App` structs
+Fatal notice. All screen state lives in `App` structs
 (`pick`, `conf`, `xfer`, `summ`); workers communicate through `Receiver`
 fields that the draw functions poll.
 

@@ -60,20 +60,28 @@ fn test_dest_claim() {
     use std::path::Path;
     let a = Path::new("/tmp/ft-claim-a");
     let b = Path::new("/tmp/ft-claim-b");
-    let c1 = DestClaim::acquire(a).expect("first claim");
-    assert!(
-        DestClaim::acquire(a).is_err(),
-        "same destination must conflict"
-    );
-    let c2 = DestClaim::acquire(b).expect("other destination is free");
-    drop(c1);
-    assert!(DestClaim::acquire(a).is_ok(), "claim must be free after drop");
-    // Stale claim file (dead pid) is ignored and cleaned up.
-    let dead = crate::log::state_dir().with_extension("job.4294967295");
     std::fs::create_dir_all(crate::log::state_base()).unwrap();
+
+    // Own claim does not block itself (retry in the same window).
+    let c1 = DestClaim::acquire(a).expect("first claim");
+    assert!(DestClaim::conflicts(a).is_empty(), "own claim must not block");
+
+    // A live foreign pid on the same destination blocks (pid 1 is alive).
+    let foreign = crate::log::state_dir().with_extension("job.1");
+    std::fs::write(&foreign, format!("{}\n", a.display())).unwrap();
+    let others = DestClaim::conflicts(a);
+    assert_eq!(others.len(), 1, "foreign claim must conflict: {others:?}");
+    assert!(DestClaim::acquire(a).is_err(), "same destination must conflict");
+    // … but a different destination stays free.
+    let c2 = DestClaim::acquire(b).expect("other destination must be free");
+    let _ = std::fs::remove_file(&foreign);
+
+    // Stale claim (dead pid) is ignored and cleaned up.
+    let dead = crate::log::state_dir().with_extension("job.4294967295");
     std::fs::write(&dead, "/tmp/ft-claim-a\n").unwrap();
     assert!(DestClaim::conflicts(a).is_empty(), "dead pid must not conflict");
     assert!(!dead.exists(), "stale claim must be removed");
+    drop(c1);
     drop(c2);
 }
 

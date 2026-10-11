@@ -75,9 +75,10 @@ Kamera-Karten):
 
 - Löscht **nie** etwas (kein `--delete`).
 - Verweigert Selbst-Kopier-Schleifen (Quelle im Zielbaum oder umgekehrt).
-- **Nur eine Instanz** gleichzeitig (`flock`,
-  `~/.local/state/filetransfer.lock`); zweiter Start zeigt einen Hinweis
-  statt zweier paralleler rsyncs.
+- **Parallele Fenster erlaubt**, aber **ein Ziel nur einmal gleichzeitig**:
+  jede laufende Übertragung meldet ihr Ziel in
+  `~/.local/state/filetransfer.job.<pid>`; dasselbe Ziel in einem zweiten
+  Fenster löst eine Warnung aus (trotzdem möglich).
 - Schlägt etwas fehl (rsync fehlt, Ziel weg, …): lesbare Fehlermeldung
   + Log-Eintrag.
 
@@ -90,7 +91,7 @@ Kamera-Karten):
 | `~/.local/share/applications/filetransfer.desktop` | Anwendungs-Starter / KRunner |
 | `~/.local/state/filetransfer.log` | Protokoll (Aufrufe, Entscheidungen, rsync-Exit-Codes, Verify) |
 | `~/.local/state/filetransfer.last` | Zuletzt verwendetes Ziel + Einstellungen (verify, autoclose) |
-| `~/.local/state/filetransfer.lock` | Single-Instance-Lock |
+| `~/.local/state/filetransfer.job.<pid>` | Ziel-Anmeldung laufender Übertragungen (Ziel-Sperre) |
 
 ## Selbsttest ohne GUI
 
@@ -98,7 +99,7 @@ Kamera-Karten):
 filetransfer --selftest
 ```
 
-Prüft progress2-Parser, Namensregeln, Lock, und macht eine komplette
+Prüft progress2-Parser, Namensregeln, Ziel-Anmeldung, und macht eine komplette
 Kopierrunde (rsync + FAT32-Zerlegung + Fortsetzen + Verify) in /tmp.
 
 ## Testplan (manuell)
@@ -119,7 +120,8 @@ Kopierrunde (rsync + FAT32-Zerlegung + Fortsetzen + Verify) in /tmp.
    „fortsetzbar“.
 9. Ziel offline: `sudo umount /mnt/nas` → das Ziel verschwindet aus der
    Seitenleiste; nach dem Remount erscheint es wieder.
-10. Doppelstart → Lock-Hinweis.
+10. Zwei Fenster auf dasselbe Ziel → Warnung „Ziel wird bereits beschrieben“;
+    unterschiedliche Ziele laufen parallel.
 11. Einstellungen-Dialog: Haken für Prüfung/autoclose setzen und über
     „Übernehmen“ speichern — Datei `filetransfer.last` prüfen.
 12. Log-Kontrolle in `~/.local/state/filetransfer.log`.
