@@ -635,6 +635,40 @@ impl App {
             return;
         }
 
+        // Bottom action bar FIRST so it reserves its space — a full-height
+        // scroll area in the central panel would otherwise push it out of view.
+        egui::Panel::bottom("pick_bottom").resizable(false).show(ui, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("Neuer Ordner …").clicked() {
+                    self.pick.new_folder = Some(String::new());
+                }
+                if ui.button("Abbrechen").clicked() {
+                    log::append("picker cancelled by user");
+                    self.close(ctx);
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(egui::Button::new(
+                            egui::RichText::new("Diesen Ordner verwenden").strong(),
+                        ))
+                        .clicked()
+                    {
+                        self.try_use();
+                    }
+                    let here = self.pick.cur.display().to_string();
+                    let free = self
+                        .fresh_listing()
+                        .and_then(|l| l.probe.free)
+                        .map(fsutil::fmt_size);
+                    ui.weak(format!(
+                        "{here}{}",
+                        free.map(|f| format!(" · {f} frei")).unwrap_or_default()
+                    ));
+                });
+            });
+        });
+
         // Left: locations
         egui::Panel::left("locations")
             .resizable(false)
@@ -778,37 +812,6 @@ impl App {
                 } else {
                     ui.weak("—");
                 }
-            });
-
-            // Bottom bar
-            ui.separator();
-            ui.horizontal(|ui| {
-                if ui.button("Neuer Ordner …").clicked() {
-                    self.pick.new_folder = Some(String::new());
-                }
-                if ui.button("Abbrechen").clicked() {
-                    log::append("picker cancelled by user");
-                    self.close(ctx);
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(egui::Button::new(
-                            egui::RichText::new("Diesen Ordner verwenden").strong(),
-                        ))
-                        .clicked()
-                    {
-                        self.try_use();
-                    }
-                    let here = self.pick.cur.display().to_string();
-                    let free = self
-                        .fresh_listing()
-                        .and_then(|l| l.probe.free)
-                        .map(fsutil::fmt_size);
-                    ui.weak(format!(
-                        "{here}{}",
-                        free.map(|f| format!(" · {f} frei")).unwrap_or_default()
-                    ));
-                });
             });
         });
 
@@ -976,6 +979,40 @@ impl App {
         };
         let n_conf = plan.conflicts.len();
 
+        // Bottom action bar FIRST so it reserves its space.
+        egui::Panel::bottom("conf_bottom").resizable(false).show(ui, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("Zurück").clicked() {
+                    self.conf.plan = None;
+                    self.screen = Screen::Pick;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(egui::Button::new(
+                            egui::RichText::new("Übertragen starten").strong(),
+                        ))
+                        .clicked()
+                    {
+                        let edits: Vec<(usize, String)> = self
+                            .conf
+                            .rename_edits
+                            .iter()
+                            .map(|(k, v)| (*k, v.trim().to_string()))
+                            .filter(|(_, v)| !v.is_empty())
+                            .collect();
+                        let plan = self.conf.plan.as_mut().unwrap();
+                        for (idx, name) in edits {
+                            if plan.items[idx].policy == Policy::Rename {
+                                plan.items[idx].dst_name = name;
+                            }
+                        }
+                        self.begin_transfer();
+                    }
+                });
+            });
+        });
+
         egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("Konflikte am Ziel");
             ui.add_space(4.0);
@@ -1119,37 +1156,6 @@ impl App {
                             }
                         }
                     });
-            });
-
-            ui.separator();
-            ui.horizontal(|ui| {
-                if ui.button("Zurück").clicked() {
-                    self.conf.plan = None;
-                    self.screen = Screen::Pick;
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(egui::Button::new(
-                            egui::RichText::new("Übertragen starten").strong(),
-                        ))
-                        .clicked()
-                    {
-                        let edits: Vec<(usize, String)> = self
-                            .conf
-                            .rename_edits
-                            .iter()
-                            .map(|(k, v)| (*k, v.trim().to_string()))
-                            .filter(|(_, v)| !v.is_empty())
-                            .collect();
-                        let plan = self.conf.plan.as_mut().unwrap();
-                        for (idx, name) in edits {
-                            if plan.items[idx].policy == Policy::Rename {
-                                plan.items[idx].dst_name = name;
-                            }
-                        }
-                        self.begin_transfer();
-                    }
-                });
             });
         });
     }
