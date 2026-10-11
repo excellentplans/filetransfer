@@ -436,6 +436,7 @@ fn copy_chunks(item: &Item, cancel: &AtomicBool, tx: &Sender<Msg>, short: &str) 
             .join(format!("{}.{:03}", item.dst_name, k + 1));
         let mut dstf = std::fs::File::create(&part_path).map_err(|e| io_err(&part_path, e))?;
         let mut written: u64 = 0;
+        let mut last_send = base_done;
         while written < expected {
             if cancel.load(Ordering::Relaxed) {
                 // Partial part file stays — that's the resume point.
@@ -449,6 +450,18 @@ fn copy_chunks(item: &Item, cancel: &AtomicBool, tx: &Sender<Msg>, short: &str) 
             dstf.write_all(&chunk)
                 .map_err(|e| XErr::Io(format!("Schreibfehler am Ziel: {}", crate::fsutil::ioerr(&e))))?;
             written += want as u64;
+            // Live progress while the part fills (the following sync_all
+            // blocks for a while on USB — the bar must not stand still).
+            if base_done + written - last_send >= (8 * BUF) as u64 {
+                last_send = base_done + written;
+                let _ = tx.send(Msg::EngineProg {
+                    name: short.to_string(),
+                    part: k + 1,
+                    parts,
+                    done: base_done + written,
+                    total: item.size,
+                });
+            }
         }
         let _ = dstf.sync_all();
         drop(dstf);

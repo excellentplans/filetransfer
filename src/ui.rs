@@ -102,6 +102,8 @@ pub struct App {
     pub settings: Settings,
     /// "Einstellungen" dialog (verify/autoclose) — open over any screen.
     show_settings: bool,
+    /// Held for the app lifetime: enforces single instance.
+    pub _lock: Option<crate::log::InstanceLock>,
     pub startup: Option<Receiver<Result<Vec<SrcInfo>, String>>>,
     /// Result of the intake file dialog (None = cancelled).
     pub picker: Option<Receiver<Option<Vec<PathBuf>>>>,
@@ -189,8 +191,9 @@ impl App {
         cc: &eframe::CreationContext<'_>,
         raw: Vec<PathBuf>,
         startup: Option<Receiver<Result<Vec<SrcInfo>, String>>>,
-        lock_ok: bool,
+        lock: Option<crate::log::InstanceLock>,
     ) -> App {
+        let lock_ok = lock.is_some();
         let dark = system_prefers_dark();
         let pal = if dark { &DARK } else { &LIGHT };
         apply_theme(&cc.egui_ctx, pal, dark);
@@ -205,6 +208,7 @@ impl App {
             pal,
             settings: Settings::load(),
             show_settings: false,
+            _lock: lock,
             startup,
             picker: None,
             dest_picker: None,
@@ -489,6 +493,9 @@ impl App {
                 } else {
                     self.xfer.complete_at = Some(Instant::now());
                 }
+                // The worker channel is gone — keep frames coming for the
+                // hold/verify phases (no user input needed).
+                ctx.request_repaint_after(Duration::from_millis(200));
             }
             Some(o) => {
                 let txt = match &o {
@@ -536,6 +543,9 @@ impl App {
         if all_ok {
             // Hold the completed state for a moment so it is actually seen.
             self.xfer.complete_at = Some(Instant::now());
+            // No channel is active anymore — keep frames coming so the hold
+            // counts down and the summary appears without user input.
+            ctx.request_repaint_after(Duration::from_millis(200));
         } else {
             self.goto_summary(Outcome::Ok);
         }
@@ -1012,6 +1022,11 @@ fn draw_row(
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Heartbeat: guarantees that screen transitions, the completion hold
+        // and the auto-close grace fire without user input, even when no
+        // worker channel is active. This UI redraws in well under a
+        // millisecond, so a 300 ms heartbeat costs nothing.
+        ctx.request_repaint_after(Duration::from_millis(300));
         // No on_close_event in eframe 0.36: watch close_requested each frame.
         if ctx.input(|i| i.viewport().close_requested()) {
             let copying = self.xfer.rx.is_some() && self.xfer.outcome.is_none();
@@ -1798,6 +1813,8 @@ impl App {
         if let Some(t) = self.xfer.complete_at {
             if t.elapsed() >= Duration::from_millis(2000) {
                 self.goto_summary(Outcome::Ok);
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(200));
             }
         }
         if self.screen != Screen::Transfer {
@@ -2148,17 +2165,21 @@ impl App {
             .as_ref()
             .map(|r| r.as_ref().map(|x| x.fails.is_empty()).unwrap_or(true))
             .unwrap_or(true);
-        if self.settings.autoclose
+        let autoclose_pending = self.settings.autoclose
             && !self.summ.autoclose_off
             && !self.show_settings
-            && self.summ.opened.elapsed() >= Duration::from_millis(2000)
             && matches!(self.summ.outcome, Outcome::Ok)
             && self.summ.verify.is_none()
-            && report_ok
-        {
-            log::append("autoclose");
-            self.settings.save();
-            self.close(ctx);
+            && report_ok;
+        if autoclose_pending {
+            // Keep frames coming so the grace period counts down without
+            // user input.
+            ctx.request_repaint_after(Duration::from_millis(250));
+            if self.summ.opened.elapsed() >= Duration::from_millis(2000) {
+                log::append("autoclose");
+                self.settings.save();
+                self.close(ctx);
+            }
         }
     }
 }
@@ -2201,9 +2222,12 @@ fn copy_progress(x: &XferState) -> (f32, String) {
     } else if x.copy_done {
         (1.0, "Kopieren abgeschlossen".into())
     } else if x.steps > 0 {
-        ((x.step as f32 - 0.5) / x.steps.max(1) as f32, String::new())
+        (
+            (x.step as f32 - 0.5) / x.steps.max(1) as f32,
+            x.phase.clone(),
+        )
     } else {
-        (0.0, String::new())
+        (0.0, x.phase.clone())
     }
 }
 

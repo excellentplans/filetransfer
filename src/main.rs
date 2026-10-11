@@ -32,8 +32,10 @@ fn main() -> eframe::Result {
     }
 
     log::append(&format!("=== invoked files={}", argv.len()));
-    let lock_ok = log::InstanceLock::acquire().is_ok();
-    if !lock_ok {
+    // Hold the lock for the whole app lifetime — dropping it (e.g. via
+    // `.is_ok()`) would silently allow parallel instances.
+    let lock = log::InstanceLock::acquire().ok();
+    if lock.is_none() {
         log::append("second instance blocked by lock");
     }
 
@@ -58,7 +60,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Dateien übertragen",
         options,
-        Box::new(move |cc| Ok(Box::new(ui::App::new(cc, raw, Some(rx), lock_ok)))),
+        Box::new(move |cc| Ok(Box::new(ui::App::new(cc, raw, Some(rx), lock)))),
     )
 }
 

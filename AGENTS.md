@@ -27,7 +27,10 @@ i18n layer unless asked. Sizes/speeds use German decimal comma (`fmt_size`,
   runs on a `std::thread` and reports back via `std::sync::mpsc` channels;
   the UI polls receivers each frame with `try_recv` and calls
   `ctx.request_repaint_after(...)` while waiting. Follow this pattern for
-  anything new that touches the filesystem.
+  anything new that touches the filesystem. `App::ui` additionally fires a
+  cheap 300 ms heartbeat so screen transitions, the completion hold and the
+  auto-close grace happen without user input (a transition frame without a
+  pending repaint would otherwise present a blank window).
 - **Never delete data.** No `--delete` anywhere, ever. Conflicts default to
   Skip. The self-copy-loop guard (`args::overlaps`) must stay.
 - **Single instance.** `flock` on `~/.local/state/filetransfer.lock`; a
