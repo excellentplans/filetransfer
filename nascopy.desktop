@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Service
+Encoding=UTF-8
+ServiceTypes=KonqPopupMenu/Plugin
+MimeType=all/allfiles;inode/directory;
+X-KDE-Priority=TopLevel
+Actions=transferfile;
+
+[Desktop Action transferfile]
+Name=Datei übertragen …
+Name[en]=Transfer file…
+Icon=folder-remote
+Exec=/home/erni/.local/bin/nascopy %F
