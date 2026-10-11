@@ -114,6 +114,13 @@ Transfer screen specifics (user-requested, **do not "simplify" away**):
 - Panel ordering matters: add `egui::Panel::bottom(...)` **first**, then
   left/central panels. A full-height scroll area in CentralPanel otherwise
   pushes the bottom bar out of view.
+- Bottom panels must not contain a full-height child Ui (`with_layout`
+  centered directly inside the panel). The child eats the whole remaining
+  height, the trailing `add_space` overflows the panel's max_rect, and the
+  persisted `PanelState` compounds the bar taller on every frame — the bar
+  climbs until it covers the window (slow at heartbeat rate, fast with mouse
+  events; only hit the intake bar, the others wrap their row in
+  `ui.horizontal`). Keep every bottom-bar row fixed-height.
 - Custom rows (`draw_row`) paint sidebar locations and folder entries by
   hand; `primary_button` is the single filled accent button per screen.
 - eframe 0.36: `eframe::App` implements `fn ui(&mut self, ui, frame)` (not

@@ -1100,15 +1100,22 @@ impl App {
         }
 
         let pal = self.pal;
+        // The row must live inside a fixed-height `ui.horizontal`: a
+        // full-height centered child (with_layout alone) would overflow the
+        // panel's max_rect by the trailing add_space every frame, and the
+        // persisted panel size would compound — the bar climbs until it
+        // covers the window. Same pattern as pick/conf/xfer/summ bars.
         egui::Panel::bottom("intake_bottom").resizable(false).show(ui, |ui| {
             ui.add_space(8.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Schließen").clicked() {
-                    self.close(ctx);
-                }
-                if ui.button("Einstellungen …").clicked() {
-                    self.show_settings = true;
-                }
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Schließen").clicked() {
+                        self.close(ctx);
+                    }
+                    if ui.button("Einstellungen …").clicked() {
+                        self.show_settings = true;
+                    }
+                });
             });
             ui.add_space(8.0);
         });
