@@ -1,4 +1,4 @@
-//! State dir logging + single-instance lock (~/.local/state/nascopy.*).
+//! State dir logging + single-instance lock (~/.local/state/filetransfer.*).
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -7,14 +7,24 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub fn state_dir() -> PathBuf {
-    let base = std::env::var("XDG_STATE_HOME")
+/// The directory that actually exists on disk (state_dir() is a file stem).
+pub fn state_base() -> PathBuf {
+    std::env::var("XDG_STATE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             let h = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
             PathBuf::from(h).join(".local/state")
-        });
-    base.join("nascopy")
+        })
+}
+
+pub fn state_dir() -> PathBuf {
+    state_base().join("filetransfer")
+}
+
+/// Settings of the predecessor app (nascopy), for one-time migration.
+pub fn legacy_last_path() -> Option<PathBuf> {
+    let p = state_base().join("nascopy.last");
+    p.exists().then_some(p)
 }
 
 pub fn log_path() -> PathBuf {
@@ -47,8 +57,7 @@ static LOG: Mutex<()> = Mutex::new(());
 
 pub fn append(msg: &str) {
     let _g = LOG.lock();
-    let dir = state_dir();
-    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::create_dir_all(state_base());
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(log_path()) {
         let _ = writeln!(f, "{} {}", clock(), msg);
     }
@@ -63,7 +72,7 @@ pub fn q(s: &str) -> String {
     }
 }
 
-/// Single-instance lock: hold an flock on nascopy.lock for the app lifetime.
+/// Single-instance lock: hold an flock on filetransfer.lock for the app lifetime.
 pub struct InstanceLock {
     _file: File,
 }
@@ -71,8 +80,7 @@ pub struct InstanceLock {
 impl InstanceLock {
     /// Ok(lock) = we are the only instance. Err(()) = another instance holds it.
     pub fn acquire() -> Result<InstanceLock, ()> {
-        let dir = state_dir();
-        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::create_dir_all(state_base());
         let file = OpenOptions::new()
             .create(true)
             .write(true)

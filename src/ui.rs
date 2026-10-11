@@ -1,29 +1,85 @@
-//! egui UI: alle Bildschirme (Deutsch) — Zielwahl, Konflikte, Fortschritt, Ergebnis.
+//! egui UI — German screens: intake (drop/picker), destination picker,
+//! conflicts, transfer (copy bar + completion symbol + verify bar), summary.
 
 use crate::args::{self, SrcInfo};
 use crate::conflicts::{self, EngineKind, Plan, Policy};
-use crate::dest::{self, Listing, Location};
+use crate::dest::{self, Listing, Location, LocationKind};
 use crate::fsutil::{self, FsKind, FAT_MAX_FILE};
 use crate::log;
 use crate::state::Settings;
 use crate::transfer::{self, Msg, Outcome, Prog};
 use crate::verify::{self, VerifyReport};
-use egui::{Align2, Color32, Context, ViewportCommand};
+use egui::{Align2, Color32, Context, FontId, Sense, ViewportCommand};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const ACCENT: Color32 = Color32::from_rgb(0x3D, 0xAE, 0xD9);
-const ACCENT_DIM: Color32 = Color32::from_rgba_premultiplied(0x3D, 0xAE, 0xD9, 60);
-const GREEN: Color32 = Color32::from_rgb(0x2E, 0xCC, 0x71);
-const RED: Color32 = Color32::from_rgb(0xE7, 0x4C, 0x3C);
-const WARN: Color32 = Color32::from_rgb(0xF3, 0xB0, 0x2C);
+// ---------- palette ----------
+//
+// Petrol as the single interaction accent; status colors are reserved for
+// status. Two palettes (KDE light / dark), chosen at startup.
+
+struct Palette {
+    panel: Color32,
+    extreme: Color32,
+    faint: Color32,
+    text: Color32,
+    muted: Color32,
+    line: Color32,
+    accent: Color32,
+    on_accent: Color32,
+    accent_soft: Color32,
+    /// Blue of the verification progress bar (distinct from petrol).
+    verify: Color32,
+    ok: Color32,
+    warn: Color32,
+    err: Color32,
+    hover: Color32,
+    widget: Color32,
+}
+
+const LIGHT: Palette = Palette {
+    panel: Color32::from_rgb(0xFB, 0xFC, 0xFD),
+    extreme: Color32::from_rgb(0xFF, 0xFF, 0xFF),
+    faint: Color32::from_rgb(0xF1, 0xF4, 0xF6),
+    text: Color32::from_rgb(0x23, 0x28, 0x2D),
+    muted: Color32::from_rgb(0x5F, 0x6E, 0x78),
+    line: Color32::from_rgb(0xD8, 0xDF, 0xE3),
+    accent: Color32::from_rgb(0x0E, 0x70, 0x86),
+    on_accent: Color32::WHITE,
+    accent_soft: Color32::from_rgba_premultiplied(2, 20, 24, 45),
+    verify: Color32::from_rgb(0x2E, 0x6F, 0xB4),
+    ok: Color32::from_rgb(0x2F, 0x8F, 0x5B),
+    warn: Color32::from_rgb(0xA6, 0x6F, 0x14),
+    err: Color32::from_rgb(0xB4, 0x45, 0x3A),
+    hover: Color32::from_rgb(0xE8, 0xEE, 0xF0),
+    widget: Color32::from_rgb(0xED, 0xF1, 0xF3),
+};
+
+const DARK: Palette = Palette {
+    panel: Color32::from_rgb(0x2A, 0x2F, 0x33),
+    extreme: Color32::from_rgb(0x1B, 0x1F, 0x21),
+    faint: Color32::from_rgb(0x34, 0x3A, 0x3E),
+    text: Color32::from_rgb(0xE4, 0xE9, 0xEA),
+    muted: Color32::from_rgb(0x98, 0xA5, 0xAB),
+    line: Color32::from_rgb(0x3C, 0x43, 0x47),
+    accent: Color32::from_rgb(0x45, 0xB7, 0xCC),
+    on_accent: Color32::from_rgb(0x10, 0x23, 0x2A),
+    accent_soft: Color32::from_rgba_premultiplied(13, 34, 38, 48),
+    verify: Color32::from_rgb(0x5B, 0x9B, 0xD9),
+    ok: Color32::from_rgb(0x5B, 0xC9, 0x8B),
+    warn: Color32::from_rgb(0xE2, 0xB3, 0x55),
+    err: Color32::from_rgb(0xE5, 0x76, 0x6B),
+    hover: Color32::from_rgb(0x38, 0x3E, 0x42),
+    widget: Color32::from_rgb(0x31, 0x37, 0x3B),
+};
 
 #[derive(Clone, PartialEq)]
-pub enum Screen {    Startup,
-    NoArgs,
+pub enum Screen {
+    Startup,
+    Intake,
     Fatal(String),
     AlreadyRunning,
     Pick,
@@ -38,8 +94,13 @@ pub enum ScanMsg {
 }
 
 pub struct App {
+    pal: &'static Palette,
     pub settings: Settings,
     pub startup: Option<Receiver<Result<Vec<SrcInfo>, String>>>,
+    /// Result of the intake file dialog (None = cancelled).
+    pub picker: Option<Receiver<Option<Vec<PathBuf>>>>,
+    /// Result of the sidebar folder picker (None = cancelled).
+    pub dest_picker: Option<Receiver<Option<PathBuf>>>,
     pub sources: Option<Vec<SrcInfo>>,
     pub locations: Vec<Location>,
     pub screen: Screen,
@@ -85,6 +146,16 @@ pub struct XferState {
     pub item_outs: Vec<(usize, Result<(), String>, String)>,
     pub started: Instant,
     pub outcome: Option<Outcome>,
+    /// Copy phase finished; verification (if enabled) may still run.
+    pub copy_done: bool,
+    /// Verification running on this screen (second bar).
+    pub verify: Option<Receiver<verify::VMsg>>,
+    pub verify_prog: (usize, usize),
+    pub verify_report: Option<Result<VerifyReport, String>>,
+    /// Moment everything succeeded — drives the completion symbol and the
+    /// short hold before the summary appears.
+    pub complete_at: Option<Instant>,
+    pub elapsed: Option<Duration>,
 }
 
 pub struct SummState {
@@ -105,17 +176,22 @@ impl App {
         startup: Option<Receiver<Result<Vec<SrcInfo>, String>>>,
         lock_ok: bool,
     ) -> App {
-        apply_breeze_look(&cc.egui_ctx);
+        let dark = system_prefers_dark();
+        let pal = if dark { &DARK } else { &LIGHT };
+        apply_theme(&cc.egui_ctx, pal, dark);
         let screen = if !lock_ok {
             Screen::AlreadyRunning
         } else if raw.is_empty() {
-            Screen::NoArgs
+            Screen::Intake
         } else {
             Screen::Startup
         };
         App {
+            pal,
             settings: Settings::load(),
             startup,
+            picker: None,
+            dest_picker: None,
             sources: None,
             locations: dest::build_locations(),
             screen,
@@ -153,6 +229,12 @@ impl App {
                 item_outs: Vec::new(),
                 started: Instant::now(),
                 outcome: None,
+                copy_done: false,
+                verify: None,
+                verify_prog: (0, 0),
+                verify_report: None,
+                complete_at: None,
+                elapsed: None,
             },
             summ: SummState {
                 outcome: Outcome::Ok,
@@ -208,6 +290,24 @@ impl App {
             }
             _ => None,
         }
+    }
+
+    /// Sidebar entry for a folder the user picked by hand.
+    fn add_other_location(&mut self, path: PathBuf) {
+        if let Some(i) = self.locations.iter().position(|l| l.root == path) {
+            self.set_loc(i);
+            return;
+        }
+        self.locations.push(Location {
+            label: path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string()),
+            root: path.clone(),
+            detail: "eigenen Pfad".into(),
+            kind: LocationKind::Other,
+        });
+        self.set_loc(self.locations.len() - 1);
     }
 
     fn try_use(&mut self) {
@@ -296,16 +396,34 @@ impl App {
             item_outs: Vec::new(),
             started: Instant::now(),
             outcome: None,
+            copy_done: false,
+            verify: None,
+            verify_prog: (0, 0),
+            verify_report: None,
+            complete_at: None,
+            elapsed: None,
         };
         self.screen = Screen::Transfer;
     }
 
+    // ---------- intake ----------
+
+    /// Files chosen in the intake screen (drop or dialog) → validate off-thread.
+    fn spawn_collect(&mut self, raw: Vec<PathBuf>) {
+        log::append(&format!("intake files={}", raw.len()));
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(args::collect(&raw));
+        });
+        self.startup = Some(rx);
+        self.screen = Screen::Startup;
+    }
+
+    // ---------- polling ----------
+
     fn poll_xfer(&mut self, ctx: &Context) {
-        let rx = match self.xfer.rx.take() {
-            Some(r) => r,
-            None => return,
-        };
-        let mut done = false;
+        let Some(rx) = self.xfer.rx.take() else { return };
+        let mut finished: Option<Outcome> = None;
         loop {
             match rx.try_recv() {
                 Ok(Msg::Phase(label, step, steps)) => {
@@ -324,85 +442,83 @@ impl App {
                 Ok(Msg::RunStats(s)) => self.xfer.stats = Some(s),
                 Ok(Msg::ItemDone { idx, res, sha }) => self.xfer.item_outs.push((idx, res, sha)),
                 Ok(Msg::Finished(o)) => {
-                    self.xfer.outcome = Some(o);
+                    finished = Some(o);
+                    break;
+                }
+                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+            }
+        }
+        match finished {
+            None => {
+                self.xfer.rx = Some(rx);
+                ctx.request_repaint_after(Duration::from_millis(120));
+            }
+            Some(Outcome::Ok) => {
+                log::append(&format!(
+                    "transfer_done outcome=ok elapsed={:.1}s",
+                    self.xfer.started.elapsed().as_secs_f32()
+                ));
+                self.xfer.copy_done = true;
+                self.xfer.elapsed = Some(self.xfer.started.elapsed());
+                if self.settings.verify {
+                    // Stay on this screen; the verify bar shows progress below.
+                    self.xfer.verify = Some(verify::spawn(
+                        self.xfer.plan.clone(),
+                        self.xfer.cancel.clone(),
+                    ));
+                } else {
+                    self.xfer.complete_at = Some(Instant::now());
+                }
+            }
+            Some(o) => {
+                let txt = match &o {
+                    Outcome::Cancelled => "cancelled",
+                    Outcome::Failed(_) => "failed",
+                    Outcome::Ok => "ok",
+                };
+                log::append(&format!(
+                    "transfer_done outcome={txt} elapsed={:.1}s",
+                    self.xfer.started.elapsed().as_secs_f32()
+                ));
+                self.goto_summary(o);
+            }
+        }
+    }
+
+    fn poll_xfer_verify(&mut self, ctx: &Context) {
+        let Some(rx) = self.xfer.verify.take() else { return };
+        let mut done = false;
+        loop {
+            match rx.try_recv() {
+                Ok(verify::VMsg::Prog(d, t)) => self.xfer.verify_prog = (d, t),
+                Ok(verify::VMsg::Done(res)) => {
+                    self.xfer.verify_report = Some(res);
                     done = true;
                     break;
                 }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
             }
         }
-        if done {
-            let outcome = self.xfer.outcome.clone().unwrap_or(Outcome::Ok);
-            let outcome_txt = match &outcome {
-                Outcome::Ok => "ok",
-                Outcome::Cancelled => "cancelled",
-                Outcome::Failed(_) => "failed",
-            };
-            let elapsed = self.xfer.started.elapsed();
-            log::append(&format!(
-                "transfer_done outcome={outcome_txt} elapsed={:.1}s",
-                elapsed.as_secs_f32()
-            ));
-            let verify_rx = if matches!(outcome, Outcome::Ok) && self.settings.verify {
-                Some(verify::spawn(self.xfer.plan.clone(), self.xfer.cancel.clone()))
-            } else {
-                None
-            };
-            self.summ = SummState {
-                outcome,
-                stats: self.xfer.stats.take(),
-                elapsed,
-                plan: std::mem::replace(&mut self.xfer.plan, empty_plan()),
-                item_outs: std::mem::take(&mut self.xfer.item_outs),
-                verify: verify_rx,
-                verify_prog: (0, 0),
-                report: None,
-            };
-            self.screen = Screen::Summary;
-        } else {
-            self.xfer.rx = Some(rx);
-            ctx.request_repaint_after(Duration::from_millis(120));
-        }
-    }
-
-    fn poll_verify(&mut self, ctx: &Context) {
-        let rx = match self.summ.verify.take() {
-            Some(r) => r,
-            None => return,
-        };
-        let mut finished = false;
-        loop {
-            match rx.try_recv() {
-                Ok(verify::VMsg::Prog(d, t)) => self.summ.verify_prog = (d, t),
-                Ok(verify::VMsg::Done(res)) => {
-                    self.summ.report = Some(res);
-                    finished = true;
-                    break;
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => break,
-            }
-        }
-        if finished {
-            if let Some(Ok(rep)) = &self.summ.report {
-                log::append(&format!(
-                    "verify result ok={} fails={} total={}",
-                    rep.ok,
-                    rep.fails.len(),
-                    rep.total
-                ));
-            }
-        } else {
-            self.summ.verify = Some(rx);
+        if !done {
+            self.xfer.verify = Some(rx);
             ctx.request_repaint_after(Duration::from_millis(200));
+            return;
         }
-    }
-
-    fn spawn_verify(&mut self) {
-        let plan = self.summ.plan.clone();
-        self.summ.report = None;
-        self.summ.verify = Some(verify::spawn(plan, Arc::new(AtomicBool::new(false))));
+        if let Some(Ok(rep)) = &self.xfer.verify_report {
+            log::append(&format!(
+                "verify result ok={} fails={} total={}",
+                rep.ok,
+                rep.fails.len(),
+                rep.total
+            ));
+        }
+        let all_ok = matches!(&self.xfer.verify_report, Some(Ok(rep)) if rep.fails.is_empty());
+        if all_ok {
+            // Hold the completed state for a moment so it is actually seen.
+            self.xfer.complete_at = Some(Instant::now());
+        } else {
+            self.goto_summary(Outcome::Ok);
+        }
     }
 
     /// Retry: failed engine/verify items get re-copied with Overwrite policy.
@@ -456,8 +572,71 @@ impl App {
             item_outs: Vec::new(),
             started: Instant::now(),
             outcome: None,
+            copy_done: false,
+            verify: None,
+            verify_prog: (0, 0),
+            verify_report: None,
+            complete_at: None,
+            elapsed: None,
         };
         self.screen = Screen::Transfer;
+    }
+
+    fn goto_summary(&mut self, outcome: Outcome) {
+        let elapsed = self
+            .xfer
+            .elapsed
+            .unwrap_or_else(|| self.xfer.started.elapsed());
+        self.summ = SummState {
+            outcome,
+            stats: self.xfer.stats.take(),
+            elapsed,
+            plan: std::mem::replace(&mut self.xfer.plan, empty_plan()),
+            item_outs: std::mem::take(&mut self.xfer.item_outs),
+            verify: None,
+            verify_prog: (0, 0),
+            report: self.xfer.verify_report.take(),
+        };
+        self.screen = Screen::Summary;
+    }
+
+    fn poll_verify(&mut self, ctx: &Context) {
+        // Re-run from the summary screen ("Erneut prüfen").
+        let rx = match self.summ.verify.take() {
+            Some(r) => r,
+            None => return,
+        };
+        let mut finished = false;
+        loop {
+            match rx.try_recv() {
+                Ok(verify::VMsg::Prog(d, t)) => self.summ.verify_prog = (d, t),
+                Ok(verify::VMsg::Done(res)) => {
+                    self.summ.report = Some(res);
+                    finished = true;
+                    break;
+                }
+                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+            }
+        }
+        if finished {
+            if let Some(Ok(rep)) = &self.summ.report {
+                log::append(&format!(
+                    "verify result ok={} fails={} total={}",
+                    rep.ok,
+                    rep.fails.len(),
+                    rep.total
+                ));
+            }
+        } else {
+            self.summ.verify = Some(rx);
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
+    }
+
+    fn spawn_verify(&mut self) {
+        let plan = self.summ.plan.clone();
+        self.summ.report = None;
+        self.summ.verify = Some(verify::spawn(plan, Arc::new(AtomicBool::new(false))));
     }
 
     fn close(&self, ctx: &Context) {
@@ -485,18 +664,68 @@ fn shq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-// ---------- look ----------
+// ---------- theme ----------
 
-fn apply_breeze_look(ctx: &Context) {
-    let dark = system_prefers_dark();
-    ctx.set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
-    ctx.all_styles_mut(|style| {
-        let v = &mut style.visuals;
-        v.hyperlink_color = ACCENT;
-        v.selection.bg_fill = ACCENT_DIM;
-        v.widgets.active.bg_fill = ACCENT_DIM;
-        v.widgets.hovered.bg_fill = ACCENT_DIM;
-    });
+fn apply_theme(ctx: &Context, pal: &'static Palette, dark: bool) {
+    let target = if dark { egui::Theme::Dark } else { egui::Theme::Light };
+    // egui keeps a style per theme; customize each, then activate the
+    // system's preference.
+    ctx.style_mut_of(egui::Theme::Light, |s| customize_style(s, &LIGHT));
+    ctx.style_mut_of(egui::Theme::Dark, |s| customize_style(s, &DARK));
+    ctx.set_theme(target);
+    let _ = pal; // palette is read directly by the draw code
+}
+
+fn customize_style(style: &mut egui::Style, pal: &'static Palette) {
+    let v = &mut style.visuals;
+    v.panel_fill = pal.panel;
+    v.window_fill = pal.panel;
+    v.extreme_bg_color = pal.extreme;
+    v.faint_bg_color = pal.faint;
+    v.hyperlink_color = pal.accent;
+    v.error_fg_color = pal.err;
+    v.warn_fg_color = pal.warn;
+    v.selection.bg_fill = pal.accent_soft;
+    v.selection.stroke = egui::Stroke::new(1.0, pal.accent);
+    v.window_stroke = egui::Stroke::new(1.0, pal.line);
+    v.window_shadow = egui::Shadow::NONE;
+    v.popup_shadow = egui::Shadow::NONE;
+    for w in [
+        &mut v.widgets.noninteractive,
+        &mut v.widgets.inactive,
+        &mut v.widgets.hovered,
+        &mut v.widgets.active,
+    ] {
+        w.corner_radius = egui::CornerRadius::same(6);
+    }
+    v.widgets.noninteractive.bg_fill = pal.panel;
+    v.widgets.noninteractive.weak_bg_fill = pal.panel;
+    v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, pal.text);
+    v.widgets.inactive.weak_bg_fill = pal.widget;
+    v.widgets.inactive.bg_fill = pal.widget;
+    v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, pal.line);
+    v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, pal.text);
+    v.widgets.hovered.weak_bg_fill = pal.hover;
+    v.widgets.hovered.bg_fill = pal.hover;
+    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, pal.accent_soft);
+    v.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, pal.text);
+    v.widgets.active.weak_bg_fill = pal.accent_soft;
+    v.widgets.active.bg_fill = pal.accent_soft;
+    v.widgets.active.fg_stroke = egui::Stroke::new(1.0, pal.text);
+
+    let sp = &mut style.spacing;
+    sp.item_spacing = egui::vec2(10.0, 9.0);
+    sp.button_padding = egui::vec2(14.0, 7.0);
+    sp.menu_margin = egui::Margin::same(6);
+    sp.window_margin = egui::Margin::same(16);
+    sp.interact_size.y = 30.0;
+    sp.combo_width = 220.0;
+
+    style.text_styles.insert(egui::TextStyle::Heading, FontId::proportional(19.0));
+    style.text_styles.insert(egui::TextStyle::Body, FontId::proportional(14.0));
+    style.text_styles.insert(egui::TextStyle::Button, FontId::proportional(14.5));
+    style.text_styles.insert(egui::TextStyle::Small, FontId::proportional(11.5));
+    style.text_styles.insert(egui::TextStyle::Monospace, FontId::monospace(12.5));
 }
 
 fn system_prefers_dark() -> bool {
@@ -519,29 +748,93 @@ fn system_prefers_dark() -> bool {
     }
 }
 
+// ---------- small shared widgets ----------
+
+/// Filled accent button — the one primary action of a screen.
+fn primary_button(ui: &mut egui::Ui, pal: &Palette, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).strong().color(pal.on_accent))
+            .fill(pal.accent),
+    )
+}
+
+/// Completion symbol next to the progress bars: ring while working,
+/// filled disc with a check once everything is done.
+fn draw_complete_symbol(ui: &mut egui::Ui, pal: &Palette, size: f32, done: bool, ring: Color32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), Sense::hover());
+    let pt = ui.painter();
+    let c = rect.center();
+    if done {
+        let r = size * 0.5 - 2.0;
+        pt.circle_filled(c, r, pal.ok);
+        let s = r;
+        let a = egui::pos2(c.x - s * 0.48, c.y + s * 0.06);
+        let b = egui::pos2(c.x - s * 0.10, c.y + s * 0.42);
+        let d = egui::pos2(c.x + s * 0.50, c.y - s * 0.34);
+        let w = s * 0.26;
+        let stroke = egui::Stroke::new(w, pal.on_accent);
+        pt.line_segment([a, b], stroke);
+        pt.line_segment([b, d], stroke);
+        for p in [a, b, d] {
+            pt.circle_filled(p, w * 0.5, pal.on_accent);
+        }
+    } else {
+        let r = size * 0.5 - 3.0;
+        pt.circle_stroke(c, r, egui::Stroke::new(3.0, ring));
+    }
+}
+
+/// One clickable row (sidebar locations, folder list) drawn by hand so the
+/// hover/selected states stay calm and the two lines stay aligned.
+fn draw_row(
+    ui: &mut egui::Ui,
+    pal: &Palette,
+    height: f32,
+    selected: bool,
+    clickable: bool,
+    paint: impl FnOnce(&egui::Painter, egui::Rect, &Palette),
+) -> egui::Response {
+    let width = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, height), Sense::click());
+    let fill = if selected {
+        pal.accent_soft
+    } else if clickable && resp.hovered() {
+        pal.hover
+    } else {
+        Color32::TRANSPARENT
+    };
+    let pt = ui.painter();
+    if fill != Color32::TRANSPARENT {
+        pt.rect_filled(rect, 6, fill);
+    }
+    if selected {
+        pt.rect_stroke(rect, 6, egui::Stroke::new(1.5, pal.accent), egui::StrokeKind::Inside);
+    }
+    paint(&pt.with_clip_rect(rect), rect, pal);
+    if clickable && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
+}
+
 // ---------- eframe impl ----------
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         // No on_close_event in eframe 0.36: watch close_requested each frame.
-        if ctx.input(|i| i.viewport().close_requested())
-            && self.xfer.rx.is_some()
-            && self.xfer.outcome.is_none()
-        {
-            self.xfer.cancel.store(true, Ordering::Relaxed);
-            log::append("window closing during transfer → cancel requested");
+        if ctx.input(|i| i.viewport().close_requested()) {
+            let copying = self.xfer.rx.is_some() && self.xfer.outcome.is_none();
+            let verifying = self.xfer.verify.is_some() && self.xfer.verify_report.is_none();
+            if copying || verifying {
+                self.xfer.cancel.store(true, Ordering::Relaxed);
+                log::append("window closing → cancel requested");
+            }
         }
         let screen = self.screen.clone();
         match screen {
             Screen::Startup => self.draw_startup(ui, &ctx),
-            Screen::NoArgs => self.draw_message(
-                ui,
-                &ctx,
-                "Datei übertragen",
-                "Bitte markieren Sie zuerst Dateien oder Ordner in Dolphin und starten Sie\n\
-                 „Datei übertragen …“ über das Kontextmenü (rechte Maustaste).",
-            ),
+            Screen::Intake => self.draw_intake(ui, &ctx),
             Screen::AlreadyRunning => self.draw_message(
                 ui,
                 &ctx,
@@ -563,56 +856,144 @@ impl eframe::App for App {
 // ---------- screens ----------
 
 impl App {
-    fn draw_startup(&mut self, ui: &mut egui::Ui, ctx: &Context) {
-        egui::CentralPanel::default().show(ui, |_ui| {});
-        let mut res = None;
-        if let Some(rx) = &self.startup {
+    fn draw_intake(&mut self, ui: &mut egui::Ui, ctx: &Context) {
+        // File dialog result
+        if let Some(rx) = &self.picker {
             match rx.try_recv() {
-                Ok(v) => res = Some(v),
-                Err(TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(100)),
-                Err(TryRecvError::Disconnected) => {
-                    res = Some(Err("Interner Fehler beim Start.".into()))
+                Ok(Some(paths)) if !paths.is_empty() => {
+                    self.picker = None;
+                    self.spawn_collect(paths);
                 }
+                Ok(_) => self.picker = None, // cancelled
+                Err(TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(120));
+                }
+                Err(TryRecvError::Disconnected) => self.picker = None,
             }
         }
-        if let Some(res) = res {
-            self.startup = None;
-            match res {
-                Ok(srcs) => {
-                    log::append(&format!("sources ok: {} items", srcs.len()));
-                    self.sources = Some(srcs);
-                    self.set_loc(0);
-                    self.screen = Screen::Pick;
+        // Drag & drop
+        let dropped: Vec<PathBuf> = ctx.input(|i| {
+            let mut v: Vec<PathBuf> = i
+                .raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect();
+            v.sort();
+            v.dedup();
+            v
+        });
+        let hovering = ctx.input(|i| !i.raw.hovered_files.is_empty());
+        if !dropped.is_empty() && self.picker.is_none() {
+            self.spawn_collect(dropped);
+            egui::CentralPanel::default().show(ui, |_ui| {});
+            return;
+        }
+
+        let pal = self.pal;
+        egui::Panel::bottom("intake_bottom").resizable(false).show(ui, |ui| {
+            ui.add_space(8.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Schließen").clicked() {
+                    self.close(ctx);
                 }
-                Err(e) => {
-                    log::append(&format!("startup FAILED: {e}"));
-                    self.screen = Screen::Fatal(e);
-                }
-            }
-        } else {
-            egui::CentralPanel::default().show(ui, |ui| {
-                ui.centered_and_justified(|ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(40.0);
-                        ui.add(egui::Spinner::new().size(32.0));
-                        ui.add_space(12.0);
-                        ui.label("Quellen werden geprüft …");
+            });
+            ui.add_space(8.0);
+        });
+
+        egui::CentralPanel::default().show(ui, |ui| {
+            ui.centered_and_justified(|ui| {
+                ui.vertical_centered(|ui| {
+                    ui.heading("Dateien übertragen");
+                    ui.add_space(6.0);
+                    ui.weak("Aus Dolphin oder jedem anderen Dateimanager");
+                    ui.add_space(28.0);
+                let stroke = if hovering {
+                    egui::Stroke::new(2.0, pal.accent)
+                } else {
+                    egui::Stroke::new(1.0, pal.line)
+                };
+                egui::Frame::new()
+                    .fill(if hovering { pal.accent_soft } else { pal.extreme })
+                    .stroke(stroke)
+                    .corner_radius(egui::CornerRadius::same(10))
+                    .inner_margin(egui::Margin::same(24))
+                    .show(ui, |ui| {
+                        ui.set_min_size(egui::vec2(520.0, 140.0));
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(26.0);
+                            ui.label(egui::RichText::new("Dateien oder Ordner hierher ziehen").size(16.0));
+                            ui.add_space(4.0);
+                            ui.weak("Es wird nur kopiert — am Ziel wird nichts gelöscht.");
+                        });
                     });
+                ui.add_space(18.0);
+                if self.picker.is_some() {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().size(18.0));
+                        ui.label("Dateiauswahl geöffnet …");
+                    });
+                } else if primary_button(ui, pal, "Dateien wählen …").clicked() {
+                    self.picker = Some(dest::spawn_file_picker());
+                }
                 });
             });
+        });
+    }
+
+    fn draw_startup(&mut self, ui: &mut egui::Ui, ctx: &Context) {
+        let Some(rx) = &self.startup else {
+            self.screen = Screen::Intake;
+            return;
+        };
+        let res = match rx.try_recv() {
+            Ok(v) => Some(v),
+            Err(TryRecvError::Empty) => {
+                ctx.request_repaint_after(Duration::from_millis(100));
+                None
+            }
+            Err(TryRecvError::Disconnected) => Some(Err("Interner Fehler beim Start.".into())),
+        };
+        let Some(res) = res else {
+            egui::CentralPanel::default().show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(120.0);
+                    ui.add(egui::Spinner::new().size(32.0));
+                    ui.add_space(12.0);
+                    ui.weak("Quellen werden geprüft …");
+                });
+            });
+            return;
+        };
+        self.startup = None;
+        match res {
+            Ok(srcs) => {
+                log::append(&format!("sources ok: {} items", srcs.len()));
+                self.sources = Some(srcs);
+                self.set_loc(0);
+                self.screen = Screen::Pick;
+            }
+            Err(e) => {
+                log::append(&format!("startup FAILED: {e}"));
+                self.screen = Screen::Fatal(e);
+            }
         }
     }
 
-    fn draw_message(&mut self, ui: &mut egui::Ui, ctx: &Context, title: &str, msg: &str) {
+    fn draw_message(&mut self, ui: &mut egui::Ui, _ctx: &Context, title: &str, msg: &str) {
+        let pal = self.pal;
+        let _ = pal;
         egui::CentralPanel::default().show(ui, |ui| {
-            ui.add_space(24.0);
-            ui.heading(title);
-            ui.add_space(8.0);
-            ui.label(msg);
-            ui.add_space(16.0);
-            if ui.button("Schließen").clicked() {
-                self.close(ctx);
-            }
+            ui.vertical_centered(|ui| {
+                ui.add_space(70.0);
+                ui.heading(title);
+                ui.add_space(10.0);
+                ui.label(msg);
+                ui.add_space(18.0);
+                if ui.button("Schließen").clicked() {
+                    self.close(_ctx);
+                }
+            });
         });
     }
 
@@ -622,91 +1003,100 @@ impl App {
         // Scanning overlay
         if self.pick.scanning.is_some() {
             egui::CentralPanel::default().show(ui, |ui| {
-                ui.centered_and_justified(|ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(40.0);
-                        ui.add(egui::Spinner::new().size(32.0));
-                        ui.add_space(12.0);
-                        ui.label("Ziel wird geprüft (Konflikte, FAT32-Analyse) …");
-                        ui.weak("Bei großen Ordnern auf dem NAS kann das einen Moment dauern.");
-                    });
+                ui.vertical_centered(|ui| {
+                    ui.add_space(120.0);
+                    ui.add(egui::Spinner::new().size(32.0));
+                    ui.add_space(12.0);
+                    ui.label("Ziel wird geprüft (Konflikte, FAT32-Analyse) …");
+                    ui.weak("Bei großen Ordnern auf dem NAS kann das einen Moment dauern.");
                 });
             });
             return;
         }
 
+        let pal = self.pal;
+
         // Bottom action bar FIRST so it reserves its space — a full-height
         // scroll area in the central panel would otherwise push it out of view.
         egui::Panel::bottom("pick_bottom").resizable(false).show(ui, |ui| {
-            ui.add_space(4.0);
+            ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button("Neuer Ordner …").clicked() {
-                    self.pick.new_folder = Some(String::new());
+                let listing = self.fresh_listing();
+                let mut meta = String::from("Wird geladen …");
+                if let Some(l) = &listing {
+                    meta = match l.probe.free {
+                        Some(f) => format!("{} frei", fsutil::fmt_size(f)),
+                        None => "Ziel nicht erreichbar".into(),
+                    };
                 }
-                if ui.button("Abbrechen").clicked() {
-                    log::append("picker cancelled by user");
-                    self.close(ctx);
-                }
+                ui.weak(meta);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(egui::Button::new(
-                            egui::RichText::new("Diesen Ordner verwenden").strong(),
-                        ))
-                        .clicked()
-                    {
+                    if primary_button(ui, pal, "Hierher übertragen").clicked() {
                         self.try_use();
                     }
-                    let here = self.pick.cur.display().to_string();
-                    let free = self
-                        .fresh_listing()
-                        .and_then(|l| l.probe.free)
-                        .map(fsutil::fmt_size);
-                    ui.weak(format!(
-                        "{here}{}",
-                        free.map(|f| format!(" · {f} frei")).unwrap_or_default()
-                    ));
+                    if ui.button("Neuer Ordner …").clicked() {
+                        self.pick.new_folder = Some(String::new());
+                    }
+                    if ui.button("Abbrechen").clicked() {
+                        log::append("picker cancelled by user");
+                        self.close(ctx);
+                    }
                 });
             });
+            ui.add_space(8.0);
         });
 
         // Left: locations
-        egui::Panel::left("locations")
-            .resizable(false)
-            .exact_size(210.0)
-            .show(ui, |ui| {
-                ui.add_space(8.0);
-                ui.strong("Zielorte");
-                ui.separator();
+        egui::Panel::left("locations").resizable(false).exact_size(224.0).show(ui, |ui| {
+            ui.add_space(10.0);
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                ui.style_mut().spacing.item_spacing.y = 2.0;
                 let idx = self.pick.loc;
                 for (i, loc) in self.locations.clone().iter().enumerate() {
-                    let sel = i == idx;
-                    if ui
-                        .add_sized(
-                            [ui.available_width(), 30.0],
-                            egui::Button::new(egui::RichText::new(loc.label.clone()).strong())
-                                .selected(sel)
-                                .fill(if sel {
-                                    ACCENT_DIM
-                                } else {
-                                    ui.style().visuals.extreme_bg_color
-                                }),
-                        )
-                        .clicked()
-                    {
-                        if i != idx {
-                            self.set_loc(i);
-                        }
+                    let selected = i == idx;
+                    let label = loc.label.clone();
+                    let detail = loc.detail.clone();
+                    let resp = draw_row(ui, pal, 46.0, selected, true, |pt, rect, pal| {
+                        let x = rect.left() + 12.0;
+                        pt.text(
+                            egui::pos2(x, rect.top() + 8.0),
+                            Align2::LEFT_TOP,
+                            &label,
+                            FontId::proportional(14.0),
+                            if selected { pal.accent } else { pal.text },
+                        );
+                        pt.text(
+                            egui::pos2(x, rect.top() + 26.0),
+                            Align2::LEFT_TOP,
+                            &detail,
+                            FontId::proportional(11.5),
+                            pal.muted,
+                        );
+                    });
+                    if resp.clicked() && i != idx {
+                        self.set_loc(i);
                     }
-                    ui.label(egui::RichText::new(format!("      {}", loc.detail)).small().weak());
+                }
+                ui.add_space(6.0);
+                if ui.small_button("Anderer Ordner …").clicked() && self.dest_picker.is_none() {
+                    self.dest_picker = Some(dest::spawn_folder_picker());
                 }
             });
+        });
 
         egui::CentralPanel::default().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.strong("Quellen:");
-                ui.label(sources_summary(self.sources_ref()));
-            });
-            ui.separator();
+            ui.heading("Ziel auswählen");
+            ui.label(
+                egui::RichText::new(sources_summary(self.sources_ref())).weak(),
+            )
+            .on_hover_text(
+                self.sources_ref()
+                    .iter()
+                    .map(|s| s.path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+            ui.add_space(4.0);
 
             // Last-used shortcut
             if let Some(last) = self.settings.dest.clone() {
@@ -714,7 +1104,7 @@ impl App {
                     .strip_prefix(&self.locations[self.pick.loc].root)
                     .map(|r| r.display().to_string())
                     .unwrap_or_else(|_| last.display().to_string());
-                if ui.button(format!("Zuletzt verwendet: {rel}")).clicked() {
+                if ui.small_button(format!("Zuletzt verwendet: {rel}")).clicked() {
                     self.pick.cur = last.clone();
                     self.pick.list_job = Some(dest::spawn_list(last.clone()));
                     self.pick.listed = None;
@@ -732,7 +1122,7 @@ impl App {
                 let rel = dest::rel_components(&root, &self.pick.cur);
                 let mut path = root.clone();
                 for (i, c) in rel.iter().enumerate() {
-                    ui.label("›");
+                    ui.label(egui::RichText::new("›").weak());
                     path = path.join(c);
                     let is_last = i + 1 == rel.len();
                     if is_last {
@@ -743,15 +1133,13 @@ impl App {
                         self.pick.listed = None;
                     }
                 }
-                if ui.small_button("Aufwärts").clicked() {
+                if ui.small_button("Nach oben").clicked() {
                     self.go_up();
                 }
             });
-            ui.separator();
 
             if let Some(b) = &self.pick.banner {
-                ui.colored_label(RED, b.clone());
-                ui.add_space(4.0);
+                ui.colored_label(pal.err, b.clone());
             }
 
             // Folder list
@@ -763,12 +1151,13 @@ impl App {
                 .map(|(_, _, t)| t.elapsed() > Duration::from_secs(3))
                 .unwrap_or(false);
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                ui.style_mut().spacing.item_spacing.y = 2.0;
                 if busy {
                     ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new().size(20.0));
+                        ui.add(egui::Spinner::new().size(18.0));
                         if stalled {
                             ui.colored_label(
-                                WARN,
+                                pal.warn,
                                 "Zielort reagiert langsam — NAS möglicherweise nicht erreichbar …",
                             );
                         } else {
@@ -781,32 +1170,40 @@ impl App {
                     }
                     for e in &listing.entries {
                         if e.is_dir {
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new(e.name.clone()).strong(),
-                                    )
-                                    .fill(egui::Color32::TRANSPARENT),
-                                )
-                                .clicked()
-                            {
-                                let name = e.name.clone();
+                            let name = e.name.clone();
+                            let resp = draw_row(ui, pal, 30.0, false, true, |pt, rect, pal| {
+                                pt.text(
+                                    egui::pos2(rect.left() + 12.0, rect.center().y),
+                                    Align2::LEFT_CENTER,
+                                    &name,
+                                    FontId::proportional(14.0),
+                                    pal.text,
+                                );
+                            });
+                            if resp.clicked() {
                                 self.descend(&name);
                                 break;
                             }
                         } else {
-                            ui.add_enabled(
-                                false,
-                                egui::Button::new(
-                                    egui::RichText::new(format!(
-                                        "   {}  ({})",
-                                        e.name,
-                                        fsutil::fmt_size(e.size)
-                                    ))
-                                    .weak(),
-                                )
-                                .fill(egui::Color32::TRANSPARENT),
-                            );
+                            let name = e.name.clone();
+                            let size = fsutil::fmt_size(e.size);
+                            draw_row(ui, pal, 24.0, false, false, |pt, rect, pal| {
+                                let y = rect.center().y;
+                                pt.text(
+                                    egui::pos2(rect.left() + 12.0, y),
+                                    Align2::LEFT_CENTER,
+                                    &name,
+                                    FontId::proportional(12.5),
+                                    pal.muted,
+                                );
+                                pt.text(
+                                    egui::pos2(rect.right() - 12.0, y),
+                                    Align2::RIGHT_CENTER,
+                                    &size,
+                                    FontId::proportional(11.5),
+                                    pal.muted,
+                                );
+                            });
                         }
                     }
                 } else {
@@ -832,10 +1229,9 @@ impl App {
                     ui.add_space(6.0);
                     let resp = ui.text_edit_singleline(&mut name);
                     resp.request_focus();
-                    create = ui
-                        .add_enabled(!name.trim().is_empty(), egui::Button::new("Erstellen"))
-                        .clicked()
-                        || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                    create = primary_button(ui, pal, "Erstellen").clicked()
+                        && !name.trim().is_empty()
+                        || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !name.trim().is_empty());
                     if ui.button("Abbrechen").clicked() {
                         close = true;
                     }
@@ -864,7 +1260,7 @@ impl App {
                         self.pick.cur.display()
                     ));
                     ui.horizontal(|ui| {
-                        if ui.button("Erstellen").clicked() {
+                        if primary_button(ui, pal, "Erstellen").clicked() {
                             create = true;
                         }
                         if ui.button("Abbrechen").clicked() {
@@ -888,6 +1284,19 @@ impl App {
     }
 
     fn poll_pick_jobs(&mut self, ctx: &Context) {
+        // folder picker (sidebar "Anderer Ordner …")
+        if self.dest_picker.is_some() {
+            let job = self.dest_picker.take().unwrap();
+            match job.try_recv() {
+                Ok(Some(path)) if path.is_dir() => self.add_other_location(path),
+                Ok(_) => {}
+                Err(TryRecvError::Empty) => {
+                    self.dest_picker = Some(job);
+                    ctx.request_repaint_after(Duration::from_millis(120));
+                }
+                Err(TryRecvError::Disconnected) => {}
+            }
+        }
         // listing
         if self.pick.list_job.is_some() {
             let job = self.pick.list_job.take().unwrap();
@@ -959,8 +1368,7 @@ impl App {
                         self.screen = Screen::Pick;
                         break;
                     }
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => break,
+                    Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
                 }
             }
             if done {
@@ -977,23 +1385,19 @@ impl App {
             self.screen = Screen::Pick;
             return;
         };
+        let pal = self.pal;
         let n_conf = plan.conflicts.len();
 
         // Bottom action bar FIRST so it reserves its space.
         egui::Panel::bottom("conf_bottom").resizable(false).show(ui, |ui| {
-            ui.add_space(4.0);
+            ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.button("Zurück").clicked() {
                     self.conf.plan = None;
                     self.screen = Screen::Pick;
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(egui::Button::new(
-                            egui::RichText::new("Übertragen starten").strong(),
-                        ))
-                        .clicked()
-                    {
+                    if primary_button(ui, pal, "Übertragen").clicked() {
                         let edits: Vec<(usize, String)> = self
                             .conf
                             .rename_edits
@@ -1011,38 +1415,38 @@ impl App {
                     }
                 });
             });
+            ui.add_space(8.0);
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("Konflikte am Ziel");
-            ui.add_space(4.0);
-            ui.label(format!(
-                "Ziel: {} · {} Elemente, {} · {} Konflikte",
-                plan.dest.display(),
+            ui.weak(format!("Ziel: {}", plan.dest.display()));
+            ui.weak(format!(
+                "{} Elemente, {} — {} Konflikte",
                 plan.items.len(),
                 fsutil::fmt_size(plan.total_bytes),
                 n_conf
             ));
             if plan.is_fat() {
                 ui.colored_label(
-                    ACCENT,
+                    pal.accent,
                     "FAT32 erkannt: Dateien über 4 GiB werden automatisch in Teile zerlegt (name.001, name.002 …).",
                 );
             }
             if let Some(note) = plan_total_free_note(plan.total_bytes, self.pick.dest_free) {
-                ui.colored_label(RED, note);
+                ui.colored_label(pal.err, note);
             }
-            ui.separator();
+            ui.add_space(6.0);
 
             // Apply-to-all
             ui.horizontal(|ui| {
-                ui.label("Für alle:");
+                ui.label("Für alle Konflikte:");
                 egui::ComboBox::from_id_salt("apply-all")
                     .selected_text(
                         self.conf
                             .apply_all
                             .map(|p| p.label())
-                            .unwrap_or("— einzeln wählen —"),
+                            .unwrap_or("einzeln wählen"),
                     )
                     .width(180.0)
                     .show_ui(ui, |ui| {
@@ -1074,9 +1478,8 @@ impl App {
                         self.conf.apply_all = None;
                     }
                 }
-                ui.weak("(setzt alle Zeilen auf dieselbe Aktion)");
             });
-            ui.separator();
+            ui.add_space(6.0);
 
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 egui::Grid::new("conflicts")
@@ -1084,7 +1487,7 @@ impl App {
                     .num_columns(4)
                     .spacing([14.0, 7.0])
                     .show(ui, |ui| {
-                        ui.strong("Datei / Ordner");
+                        ui.strong("Datei");
                         ui.strong("Größe");
                         ui.strong("Am Ziel vorhanden");
                         ui.strong("Aktion");
@@ -1160,120 +1563,213 @@ impl App {
         });
     }
 
+    // ---------- transfer ----------
+
     fn draw_transfer(&mut self, ui: &mut egui::Ui, ctx: &Context) {
         self.poll_xfer(ctx);
+        self.poll_xfer_verify(ctx);
+
+        // Hold the completed state briefly so the symbol is actually seen,
+        // then hand over to the summary.
+        if let Some(t) = self.xfer.complete_at {
+            if t.elapsed() >= Duration::from_millis(1400) {
+                self.goto_summary(Outcome::Ok);
+            }
+        }
         if self.screen != Screen::Transfer {
+            egui::CentralPanel::default().show(ui, |_ui| {});
             return; // moved to summary
         }
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.heading("Übertragung läuft …");
-            ui.add_space(8.0);
-            if self.xfer.steps > 0 {
-                ui.weak(format!(
-                    "Schritt {} von {} — {}",
-                    self.xfer.step, self.xfer.steps, self.xfer.phase
-                ));
-            } else {
-                ui.weak(&self.xfer.phase);
-            }
-            ui.add_space(8.0);
 
-            let frac: f32;
-            let mut detail = String::new();
-            if let Some((name, part, parts, done, total)) = &self.xfer.engine {
-                frac = if *total > 0 { *done as f32 / *total as f32 } else { 0.0 };
-                let teil = if *parts > 1 {
-                    format!(" — Teil {part}/{parts}")
+        let pal = self.pal;
+        let verifying = self.xfer.verify.is_some();
+        let complete = self.xfer.complete_at.is_some();
+
+        egui::CentralPanel::default().show(ui, |ui| {
+            ui.heading(if complete {
+                "Übertragung abgeschlossen"
+            } else if verifying {
+                "Prüfung läuft"
+            } else {
+                "Übertragung läuft"
+            });
+            if !self.xfer.copy_done {
+                if self.xfer.steps > 0 {
+                    ui.weak(format!(
+                        "Schritt {} von {} — {}",
+                        self.xfer.step, self.xfer.steps, self.xfer.phase
+                    ));
+                } else {
+                    ui.weak(&self.xfer.phase);
+                }
+            }
+            ui.add_space(10.0);
+
+            // Copy bar (green) + completion symbol — one column, the verify
+            // bar below aligns with it.
+            let sym = 60.0;
+            let col = (ui.available_width() - sym - 12.0).max(160.0);
+            ui.horizontal(|ui| {
+                let (frac, text) = copy_progress(&self.xfer);
+                ui.add(
+                    egui::ProgressBar::new(frac)
+                        .desired_width(col)
+                        .desired_height(26.0)
+                        .fill(pal.ok)
+                        .text(text),
+                );
+                let ring = if verifying { pal.verify } else { pal.line };
+                draw_complete_symbol(ui, pal, sym, complete, ring);
+            });
+            ui.add_space(2.0);
+
+            // Live numbers (no ETA — the bar and symbol carry the state).
+            if let Some(p) = &self.xfer.prog {
+                let speed = transfer::human_to_bytes(p.speed.trim_end_matches("/s"))
+                    .map(|b| fsutil::fmt_speed(b as f64))
+                    .unwrap_or_default();
+                let files = if p.tochk.1 > 0 {
+                    format!(
+                        "{} von {} Dateien",
+                        p.tochk.1.saturating_sub(p.tochk.0),
+                        p.tochk.1
+                    )
+                } else if p.xfr > 0 {
+                    format!("Datei {}", p.xfr)
                 } else {
                     String::new()
                 };
-                detail = format!(
-                    "{name}{teil} · {} von {}",
-                    fsutil::fmt_size(*done),
-                    fsutil::fmt_size(*total)
-                );
-            } else if let Some(p) = &self.xfer.prog {
-                frac = (p.pct / 100.0).clamp(0.0, 1.0);
-                let approx_total = if p.pct > 0.5 {
-                    (p.done as f64 / (p.pct as f64 / 100.0)) as u64
-                } else {
-                    0
-                };
-                detail = format!(
-                    "{} übertragen{} · {} · Rest {} · Datei #{}",
-                    fsutil::fmt_size(p.done),
-                    if approx_total > 0 {
-                        format!(" von ~{}", fsutil::fmt_size(approx_total))
-                    } else {
-                        String::new()
-                    },
-                    fsutil::fmt_speed(transfer::human_to_bytes(
-                        p.speed.trim_end_matches("/s")
-                    )
-                    .unwrap_or(0) as f64),
-                    p.eta,
-                    p.xfr
-                );
-            } else {
-                frac = if self.xfer.steps > 0 {
-                    (self.xfer.step as f32 - 0.5) / self.xfer.steps.max(1) as f32
-                } else {
-                    0.0
-                };
+                ui.horizontal(|ui| {
+                    if !speed.is_empty() {
+                        ui.label(egui::RichText::new(speed).strong());
+                    }
+                    if !files.is_empty() {
+                        ui.weak(files);
+                    }
+                });
             }
-            ui.add(
-                egui::ProgressBar::new(frac)
-                    .desired_width(ui.available_width())
-                    .text(detail),
-            );
-            ui.add_space(12.0);
+            if let Some((_, part, parts, _, _)) = &self.xfer.engine {
+                if *parts > 1 {
+                    ui.weak(format!("Teil {part} von {parts}"));
+                }
+            }
+
+            // Verification bar (blue), column-aligned below the copy bar.
+            if verifying || self.xfer.verify_report.is_some() {
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    let (lrect, _) = ui.allocate_exact_size(egui::vec2(64.0, 20.0), Sense::hover());
+                    ui.painter().text(
+                        egui::pos2(lrect.left(), lrect.center().y),
+                        Align2::LEFT_CENTER,
+                        "Prüfung",
+                        FontId::proportional(12.5),
+                        pal.muted,
+                    );
+                    let (d, t) = self.xfer.verify_prog;
+                    let frac = if t > 0 { d as f32 / t as f32 } else { 0.0 };
+                    let label = if self.xfer.verify_report.is_some() {
+                        "Prüfsummen stimmen überein".to_string()
+                    } else if t > 0 {
+                        format!("{d} von {t} Dateien")
+                    } else {
+                        "Prüfsummen werden verglichen …".to_string()
+                    };
+                    ui.add(
+                        egui::ProgressBar::new(frac)
+                            .desired_width((col - 74.0).max(80.0))
+                            .desired_height(20.0)
+                            .fill(pal.verify)
+                            .text(label),
+                    );
+                });
+            }
+
+            ui.add_space(10.0);
 
             if let Some(stats) = &self.xfer.stats {
                 ui.collapsing("rsync-Statistik", |ui| {
                     ui.monospace(stats);
                 });
             }
-
-            ui.add_space(8.0);
-            if self.xfer.outcome.is_none() {
-                if ui.button("Abbrechen").clicked() {
-                    self.xfer.cancel.store(true, Ordering::Relaxed);
-                    log::append("cancel requested by user");
-                }
-                ui.weak("Abgebrochene Kopiervorgänge bleiben erhalten und können fortgesetzt werden.");
-            }
         });
+
+        // Bottom bar: cancel while something is still running.
+        if !complete && self.xfer.outcome.is_none() {
+            egui::Panel::bottom("xfer_bottom").resizable(false).show(ui, |ui| {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.weak("Abgebrochene Kopiervorgänge bleiben erhalten und können fortgesetzt werden.");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Abbrechen").clicked() {
+                            self.xfer.cancel.store(true, Ordering::Relaxed);
+                            log::append("cancel requested by user");
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+            });
+        }
     }
 
     fn draw_summary(&mut self, ui: &mut egui::Ui, ctx: &Context) {
         self.poll_verify(ctx);
+        let pal = self.pal;
         let outcome_txt = match &self.summ.outcome {
             Outcome::Ok => "Übertragung abgeschlossen".to_string(),
             Outcome::Cancelled => "Abgebrochen — teilweise übertragen".to_string(),
             Outcome::Failed(e) => format!("Fehler: {e}"),
         };
+        let outcome_color = match &self.summ.outcome {
+            Outcome::Ok => pal.text,
+            Outcome::Cancelled => pal.warn,
+            Outcome::Failed(_) => pal.err,
+        };
         let nothing_todo = self.summ.stats.is_none()
             && self.summ.item_outs.is_empty()
             && matches!(self.summ.outcome, Outcome::Ok);
+        egui::Panel::bottom("summ_bottom").resizable(false).show(ui, |ui| {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if self.summ.report.is_some() {
+                    if ui.small_button("Erneut prüfen").clicked() {
+                        self.spawn_verify();
+                    }
+                    let has_fails = self
+                        .summ
+                        .report
+                        .as_ref()
+                        .map(|r| r.as_ref().map(|x| !x.fails.is_empty()).unwrap_or(false))
+                        .unwrap_or(false);
+                    if has_fails && ui.button("Fehlgeschlagene erneut übertragen").clicked() {
+                        self.retry_failed();
+                    }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if primary_button(ui, pal, "Fenster schließen").clicked() {
+                        self.settings.save();
+                        self.close(ctx);
+                    }
+                });
+            });
+            ui.add_space(8.0);
+        });
+
         egui::CentralPanel::default().show(ui, |ui| {
-            ui.heading(&outcome_txt);
-            ui.weak(format!(
-                "Dauer: {:.0} s · Ziel: {}",
-                self.summ.elapsed.as_secs_f32(),
-                self.summ.plan.dest.display()
-            ));
+            ui.colored_label(outcome_color, egui::RichText::new(&outcome_txt).heading());
+            ui.weak(format!("Ziel: {}", self.summ.plan.dest.display()));
+            ui.weak(format!("Dauer: {:.0} s", self.summ.elapsed.as_secs_f32()));
             if nothing_todo {
                 ui.weak("Es gab nichts zu übertragen (alle Elemente übersprungen).");
             }
-            ui.add_space(8.0);
-
             if matches!(self.summ.outcome, Outcome::Cancelled) {
                 ui.colored_label(
-                    WARN,
+                    pal.warn,
                     "Die Übertragung wurde abgebrochen. Bereits übertragene Daten bleiben erhalten —\n\
-                     einfach erneut „Datei übertragen …“ starten, um fortzusetzen.",
+                     einfach erneut „Dateien übertragen …“ starten, um fortzusetzen.",
                 );
             }
+            ui.add_space(6.0);
 
             if let Some(stats) = &self.summ.stats {
                 ui.collapsing("rsync-Statistik", |ui| {
@@ -1302,9 +1798,9 @@ impl App {
                 })
                 .collect();
             if !fails.is_empty() {
-                ui.colored_label(RED, "Fehler beim Kopieren:");
+                ui.colored_label(pal.err, "Fehler beim Kopieren:");
                 for f in &fails {
-                    ui.colored_label(RED, format!("  • {f}"));
+                    ui.colored_label(pal.err, format!("  • {f}"));
                 }
             }
 
@@ -1321,7 +1817,7 @@ impl App {
                 })
                 .collect();
             if !chunks.is_empty() {
-                ui.add_space(8.0);
+                ui.add_space(6.0);
                 ui.strong("FAT32-Zerlegung — Zusammenführen auf dem Ziel:");
                 for c in &chunks {
                     ui.horizontal(|ui| {
@@ -1334,9 +1830,8 @@ impl App {
                 ui.weak("Vor dem Abspielen/Weiterverwenden wieder zusammenführen (nur auf dem FAT32-Datenträger nötig).");
             }
 
-            // verify section
-            ui.add_space(8.0);
-            ui.separator();
+            // verify section (report arrives prefilled from the transfer
+            // screen; a manual re-run shows its progress here)
             if self.summ.verify.is_some() {
                 ui.horizontal(|ui| {
                     ui.add(egui::Spinner::new().size(18.0));
@@ -1349,21 +1844,23 @@ impl App {
                 match rep {
                     Ok(r) => {
                         if r.fails.is_empty() {
-                            ui.colored_label(GREEN, format!("OK: {} Dateien stimmen überein.", r.ok));
+                            ui.colored_label(pal.ok, format!("OK: {} Dateien stimmen überein.", r.ok));
                         } else {
                             ui.colored_label(
-                                RED,
+                                pal.err,
                                 format!("{} von {} Dateien weichen ab:", r.fails.len(), r.total),
                             );
                             for (name, why) in &r.fails {
-                                ui.colored_label(RED, format!("  • {name} — {why}"));
+                                ui.colored_label(pal.err, format!("  • {name} — {why}"));
                             }
                         }
                     }
                     Err(e) => {
-                        ui.colored_label(RED, format!("Prüfung fehlgeschlagen: {e}"));
+                        ui.colored_label(pal.err, format!("Prüfung fehlgeschlagen: {e}"));
                     }
                 }
+            } else if !matches!(self.summ.outcome, Outcome::Ok) {
+                // cancelled/failed — no verify options
             } else {
                 ui.checkbox(
                     &mut self.settings.verify,
@@ -1371,30 +1868,6 @@ impl App {
                 );
             }
             ui.checkbox(&mut self.settings.autoclose, "Fenster automatisch schließen");
-            ui.add_space(8.0);
-
-            ui.horizontal(|ui| {
-                if self.summ.report.is_some() {
-                    if ui.button("Erneut prüfen").clicked() {
-                        self.spawn_verify();
-                    }
-                    let has_fails = self
-                        .summ
-                        .report
-                        .as_ref()
-                        .map(|r| r.as_ref().map(|x| !x.fails.is_empty()).unwrap_or(false))
-                        .unwrap_or(false);
-                    if has_fails && ui.button("Fehlerhafte erneut kopieren").clicked() {
-                        self.retry_failed();
-                    }
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Schließen").clicked() {
-                        self.settings.save();
-                        self.close(ctx);
-                    }
-                });
-            });
         });
 
         // auto-close
@@ -1412,6 +1885,50 @@ impl App {
             self.settings.save();
             self.close(ctx);
         }
+    }
+}
+
+// ---------- transfer helpers ----------
+
+/// (fraction, bar text) of the copy phase.
+fn copy_progress(x: &XferState) -> (f32, String) {
+    if let Some((name, part, parts, done, total)) = &x.engine {
+        let frac = if *total > 0 { *done as f32 / *total as f32 } else { 0.0 };
+        let teil = if *parts > 1 {
+            format!(" — Teil {part} von {parts}")
+        } else {
+            String::new()
+        };
+        (
+            frac.clamp(0.0, 1.0),
+            format!(
+                "{name}{teil}: {} von {}",
+                fsutil::fmt_size(*done),
+                fsutil::fmt_size(*total)
+            ),
+        )
+    } else if let Some(p) = &x.prog {
+        if x.copy_done {
+            return (1.0, "Kopieren abgeschlossen".into());
+        }
+        let frac = (p.pct / 100.0).clamp(0.0, 1.0);
+        let approx_total = if p.pct > 0.5 {
+            (p.done as f64 / (p.pct as f64 / 100.0)) as u64
+        } else {
+            0
+        };
+        let size_part = if approx_total > 0 {
+            format!("{} von ~{}", fsutil::fmt_size(p.done), fsutil::fmt_size(approx_total))
+        } else {
+            fsutil::fmt_size(p.done)
+        };
+        (frac, format!("{size_part} — {} %", p.pct.round() as u64))
+    } else if x.copy_done {
+        (1.0, "Kopieren abgeschlossen".into())
+    } else if x.steps > 0 {
+        ((x.step as f32 - 0.5) / x.steps.max(1) as f32, String::new())
+    } else {
+        (0.0, String::new())
     }
 }
 
@@ -1433,11 +1950,18 @@ fn sources_summary(sources: &[SrcInfo]) -> String {
     let n_dirs = sources.iter().filter(|s| s.is_dir).count();
     let bytes = args::total_size(sources);
     let mut parts = Vec::new();
-    if n_files > 0 {
-        parts.push(format!("{n_files} Datei(en)"));
+    match n_files {
+        0 => {}
+        1 => parts.push("1 Datei".to_string()),
+        n => parts.push(format!("{n} Dateien")),
     }
-    if n_dirs > 0 {
-        parts.push(format!("{n_dirs} Ordner"));
+    match n_dirs {
+        0 => {}
+        1 => parts.push("1 Ordner".to_string()),
+        n => parts.push(format!("{n} Ordner")),
     }
-    format!("{} · {}", parts.join(", "), fsutil::fmt_size(bytes))
+    if parts.is_empty() {
+        return String::new();
+    }
+    format!("Von: {}, {}", parts.join(", "), fsutil::fmt_size(bytes))
 }

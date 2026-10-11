@@ -1,4 +1,4 @@
-//! Headless self-test: `nascopy --selftest`
+//! Headless self-test: `filetransfer --selftest`
 //!
 //! Exercises the full pipeline without GUI: conflict scan, FAT32 chunked
 //! copy (with a small test limit), resume, verify, and a real rsync run.
@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub fn run() {
-    println!("nascopy --selftest");
+    println!("filetransfer --selftest");
     step("rsync vorhanden", test_rsync_present);
     step("progress2-Parser", test_progress);
     step("Namensregeln", test_names);
@@ -62,7 +62,7 @@ fn test_lock() {
 }
 
 fn tmpdir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("nascopy-selftest-{tag}-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("ft-selftest-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(d.join("src")).unwrap();
     std::fs::create_dir_all(d.join("dst")).unwrap();

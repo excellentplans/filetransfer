@@ -67,9 +67,14 @@ pub fn probe_path(path: &Path) -> Probe {
 pub struct Mount {
     pub mountpoint: PathBuf,
     pub fstype: String,
+    /// Device or remote source, e.g. `//nas/videos` for a CIFS share.
+    pub source: Option<String>,
 }
 
 /// Parse /proc/self/mountinfo (local file, always fast).
+///
+/// Line layout: `id parent major:minor root mountpoint mountopts … - fstype source superopts`
+/// — the mountpoint is field 4 (0-based), the source the 2nd field after ` - `.
 pub fn mounts() -> Vec<Mount> {
     let mut out = Vec::new();
     let Ok(text) = std::fs::read_to_string("/proc/self/mountinfo") else {
@@ -83,15 +88,18 @@ pub fn mounts() -> Vec<Mount> {
         let (left, right) = line.split_at(sep);
         let right = &right[3..];
         let mut lf = left.split_whitespace();
-        let mp = match lf.nth(3) {
+        // fields: 0 id, 1 parent, 2 major:minor, 3 root, 4 mountpoint
+        let mp = match lf.nth(4) {
             Some(m) => unescape_mount(m),
             None => continue,
         };
         let mut rf = right.split_whitespace();
         let fstype = rf.next().unwrap_or("?").to_string();
+        let source = rf.next().map(unescape_mount);
         out.push(Mount {
             mountpoint: PathBuf::from(mp),
             fstype,
+            source,
         });
     }
     out

@@ -10,11 +10,11 @@ pub struct SrcInfo {
     pub is_dir: bool,
 }
 
-/// Raw argv (after our own flags). Empty -> show the "select in Dolphin" hint.
+/// Raw argv (after our own flags). Empty -> intake screen (drop / file picker).
 pub fn raw_args() -> Vec<PathBuf> {
     std::env::args()
         .skip(1)
-        .filter(|a| !a.starts_with("--nascopy-"))
+        .filter(|a| !a.starts_with("--filetransfer-"))
         .map(PathBuf::from)
         .collect()
 }
@@ -65,13 +65,13 @@ mod tests {
     #[test]
     fn overlap_detects_nested() {
         let tmp = std::env::temp_dir();
-        let a = tmp.join("nascopy-selftest-src");
+        let a = tmp.join("ft-selftest-src");
         std::fs::create_dir_all(&a).unwrap();
         let b = a.join("sub");
         std::fs::create_dir_all(&b).unwrap();
         assert!(overlaps(&a, &b));
         assert!(overlaps(&b, &a));
-        let c = tmp.join("nascopy-selftest-other");
+        let c = tmp.join("ft-selftest-other");
         std::fs::create_dir_all(&c).unwrap();
         assert!(!overlaps(&a, &c));
         let _ = std::fs::remove_dir_all(&a);

@@ -5,7 +5,7 @@
 //! chunk-splitting (>4 GiB), FAT-illegal names and user-chosen renames.
 
 use crate::args::SrcInfo;
-use crate::fsutil::{FsKind, FAT_CHUNK, FAT_MAX_FILE};
+use crate::fsutil::{FsKind, FAT_CHUNK};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 // (dest:: helpers not needed here)
@@ -684,6 +684,7 @@ fn expand_subtree(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fsutil::{FAT_CHUNK, FAT_MAX_FILE};
 
     #[test]
     fn rename_generator_dolphin_style() {
@@ -717,7 +718,7 @@ mod tests {
 
     #[test]
     fn scan_plain_conflicts() {
-        let tmp = std::env::temp_dir().join("nascopy-scan-t1");
+        let tmp = std::env::temp_dir().join("ft-scan-t1");
         let src = tmp.join("src");
         let dst = tmp.join("dst");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -743,7 +744,7 @@ mod tests {
 
     #[test]
     fn scan_fat_illegal_name_engine() {
-        let tmp = std::env::temp_dir().join("nascopy-scan-t2");
+        let tmp = std::env::temp_dir().join("ft-scan-t2");
         let src = tmp.join("srcdir");
         let dst = tmp.join("dst");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -769,7 +770,7 @@ mod tests {
 
     #[test]
     fn scan_fat_big_file_chunked() {
-        let tmp = std::env::temp_dir().join("nascopy-scan-t3");
+        let tmp = std::env::temp_dir().join("ft-scan-t3");
         let src = tmp.join("srcdir");
         let dst = tmp.join("dst");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -801,7 +802,7 @@ mod tests {
 
     #[test]
     fn chunk_resume_math() {
-        let tmp = std::env::temp_dir().join("nascopy-resume-t");
+        let tmp = std::env::temp_dir().join("ft-resume-t");
         let d = tmp.join("dst");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&d).unwrap();

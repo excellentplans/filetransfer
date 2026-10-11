@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn concat_sha_matches_full_file() {
         use std::path::PathBuf;
-        let tmp = std::env::temp_dir().join("nascopy-verify-t");
+        let tmp = std::env::temp_dir().join("ft-verify-t");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let data: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();

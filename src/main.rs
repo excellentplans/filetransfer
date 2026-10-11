@@ -1,7 +1,10 @@
-//! Datei übertragen (nascopy) — Dolphin service-menu applet.
+//! Dateien übertragen (filetransfer) — Dolphin service-menu applet and
+//! standalone tool.
 //!
-//! Copies selected files/folders to NAS or USB sticks via rsync, with
-//! Dolphin-style conflict handling and automatic FAT32 splitting of >4 GiB files.
+//! Copies selected files/folders to network shares, USB drives or local
+//! folders via rsync, with Dolphin-style conflict handling and automatic
+//! FAT32 splitting of >4 GiB files. Without arguments it accepts drag & drop
+//! or opens a file picker.
 
 mod args;
 mod conflicts;
@@ -46,14 +49,14 @@ fn main() -> eframe::Result {
 
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
-            .with_title("Datei übertragen")
-            .with_inner_size([880.0, 600.0])
-            .with_min_inner_size([680.0, 440.0])
+            .with_title("Dateien übertragen")
+            .with_inner_size([900.0, 620.0])
+            .with_min_inner_size([700.0, 460.0])
             .with_icon(app_icon()),
         ..Default::default()
     };
     eframe::run_native(
-        "Datei übertragen",
+        "Dateien übertragen",
         options,
         Box::new(move |cc| Ok(Box::new(ui::App::new(cc, raw, Some(rx), lock_ok)))),
     )
@@ -61,22 +64,23 @@ fn main() -> eframe::Result {
 
 fn print_help() {
     println!(
-        "Datei übertragen (nascopy) 1.0.0\n\
+        "Dateien übertragen (filetransfer) 1.1.0\n\
          \n\
-         Aufruf: nascopy [DATEIEN …]\n\
+         Aufruf: filetransfer [DATEIEN …]\n\
          \n\
          Wird über das Dolphin-Kontextmenü gestartet; DATEIEN sind die markierten\n\
-         Objekte. Ohne Argumente erscheint ein Hinweisfenster.\n\
+         Objekte. Ohne Argumente erscheint eine Ablage: Dateien hineinziehen oder\n\
+         über den Dateiauswahl-Dialog wählen.\n\
          \n\
          Optionen:\n\
            --selftest   Selbsttest ohne GUI (Kopierrunde inkl. FAT32-Zerlegung in /tmp)\n\
            --help       diese Hilfe\n\
          \n\
-         Daten: ~/.local/state/nascopy.log · nascopy.last · nascopy.lock"
+         Daten: ~/.local/state/filetransfer.log · filetransfer.last · filetransfer.lock"
     );
 }
 
-/// Simple programmatic icon: blue disc with a white transfer arrow.
+/// Simple programmatic icon: petrol disc with a white transfer arrow.
 fn app_icon() -> egui::IconData {
     const S: usize = 64;
     let mut rgba = vec![0u8; S * S * 4];
@@ -93,10 +97,10 @@ fn app_icon() -> egui::IconData {
                 if shaft || head {
                     (255u8, 255u8, 255u8, 255u8)
                 } else {
-                    (41u8, 128u8, 185u8, 255u8)
+                    (0x0Eu8, 0x70u8, 0x86u8, 255u8) // petrol #0E7086
                 }
             } else {
-                (0u8, 0u8, 0u8, 0u8)
+                (0, 0, 0, 0)
             };
             let i = (y * S + x) * 4;
             rgba[i] = cr;
