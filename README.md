@@ -16,11 +16,13 @@ Zwei Wege, es zu benutzen:
 ```sh
 cargo build --release
 cp target/release/filetransfer ~/.local/bin/
-cp filetransfer.desktop ~/.local/share/kservices5/ServiceMenus/   # Pfad in Exec prüfen
-kbuildsycoca5                                                     # Menü neu einlesen
+cp filetransfer-servicemenu.desktop ~/.local/share/kservices5/ServiceMenus/   # Pfad in Exec prüfen
+cp filetransfer.desktop ~/.local/share/applications/                          # Starter/KRunner
+kbuildsycoca5                                                                 # Menü neu einlesen
 ```
 
 Danach erscheint **„Dateien übertragen …“** im Rechtsklick-Menü von Dolphin
+und der Eintrag **Dateien übertragen** im Anwendungs-Starter
 (ohne Neustart). Beim ersten Start übernimmt das Programm das zuletzt
 verwendete Ziel des Vorgängers `nascopy`.
 
@@ -84,7 +86,8 @@ Kamera-Karten):
 | Pfad | Zweck |
 |---|---|
 | `~/.local/bin/filetransfer` | Programm |
-| `~/.local/share/kservices5/ServiceMenus/filetransfer.desktop` | Dolphin-Kontextmenü |
+| `~/.local/share/kservices5/ServiceMenus/filetransfer-servicemenu.desktop` | Dolphin-Kontextmenü |
+| `~/.local/share/applications/filetransfer.desktop` | Anwendungs-Starter / KRunner |
 | `~/.local/state/filetransfer.log` | Protokoll (Aufrufe, Entscheidungen, rsync-Exit-Codes, Verify) |
 | `~/.local/state/filetransfer.last` | Zuletzt verwendetes Ziel + Einstellungen (verify, autoclose) |
 | `~/.local/state/filetransfer.lock` | Single-Instance-Lock |

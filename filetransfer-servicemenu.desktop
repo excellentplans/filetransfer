@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Service
+Encoding=UTF-8
+ServiceTypes=KonqPopupMenu/Plugin
+MimeType=all/allfiles;inode/directory;
+X-KDE-Priority=TopLevel
+Actions=transferfile;
+
+[Desktop Action transferfile]
+Name=Dateien übertragen …
+Name[en]=Transfer files…
+Icon=edit-copy
+Exec=/home/erni/.local/bin/filetransfer %F

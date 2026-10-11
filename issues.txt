@@ -1,0 +1,13 @@
+bugs:
+
+- in der normalen app "filetransfer" aus terminal geöffnet: beim bewegen der maus verschiebt sich schließen dialog und verdeckt das komplette fenster
+- kontrast von texten (blauer progress auf grünem bar) ist sehr niedrig, kontrast in der app generell schlecht, auch der grau auf weiß text. Alles ein bisschen poppiger würde nicht schaden.
+- "done" symbol ist nicht wirklich als solches erkennbar- erst leerer grauer, dann blauer kreis. Sollte klar betitelt sein um wenn fertig ein grünes checkmark
+- progress bar braucht einen frame damit man sieht wo er relativ zu 100% ist
+- wenn man fenster automatisch schließen klickt, dann geht es sofort zu, und diese einstellung ist nie wieder erreichbar. sollte in einem settings dialog einstellbar sein
+- ich hab bisher das "verifizieren" nicht als checkbox gesehen, muss auch in settings
+- der checksum progress bar ändert sich nie, und es gibt auch kein blaues häkchen rechts neben dem checksum bar der zeigt dass er mit checken fertig ist.
+
+Notiz fürs troubleshooting:
+- wenn du fürs review screenshots machst muss ich jedesmal im screenshot gui dialog auf speichern klicken damits weitergeht, schlecht fürs autonome entwickeln.
+- du kannst file:///home/erni/Schreibtisch/Videos/Frühling 2026/shotcut/Frühling 26/Frühling 26.mp4 aufs root von NAS bzw auf den eingesteckten stick kopieren und das target dort auch überschreiben zum testen des programms. Guck dir die GUIs an hübsch die auch noch auf

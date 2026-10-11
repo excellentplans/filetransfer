@@ -32,12 +32,6 @@ fn main() -> eframe::Result {
     }
 
     log::append(&format!("=== invoked files={}", argv.len()));
-    // Hold the lock for the whole app lifetime — dropping it (e.g. via
-    // `.is_ok()`) would silently allow parallel instances.
-    let lock = log::InstanceLock::acquire().ok();
-    if lock.is_none() {
-        log::append("second instance blocked by lock");
-    }
 
     let raw = args::raw_args();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -60,13 +54,13 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Dateien übertragen",
         options,
-        Box::new(move |cc| Ok(Box::new(ui::App::new(cc, raw, Some(rx), lock)))),
+        Box::new(move |cc| Ok(Box::new(ui::App::new(cc, raw, Some(rx))))),
     )
 }
 
 fn print_help() {
     println!(
-        "Dateien übertragen (filetransfer) 1.2.0\n\
+        "Dateien übertragen (filetransfer) 1.3.0\n\
          \n\
          Aufruf: filetransfer [DATEIEN …]\n\
          \n\
@@ -81,7 +75,8 @@ fn print_help() {
          Einstellungen (Prüfsummen-Prüfung, automatisches Schließen) sind in der\n\
          App über „Einstellungen …“ erreichbar.\n\
          \n\
-         Daten: ~/.local/state/filetransfer.log · filetransfer.last · filetransfer.lock"
+         Daten: ~/.local/state/filetransfer.log · filetransfer.last ·
+         filetransfer.job.<pid> (Ziel-Anmeldung laufender Übertragungen)"
     );
 }
 

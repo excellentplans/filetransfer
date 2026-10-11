@@ -19,7 +19,7 @@ pub fn run() {
     step("rsync vorhanden", test_rsync_present);
     step("progress2-Parser", test_progress);
     step("Namensregeln", test_names);
-    step("Lock (eine Instanz)", test_lock);
+    step("Ziel-Anmeldung (parallel ok, gleiches Ziel blockt)", test_dest_claim);
     step("Rundtrip: FAT32-Zerlegung + rsync + Verify", test_roundtrip);
     step("Konflikt-Übernehmen", test_conflict_apply);
     println!("SELBSTTEST OK");
@@ -55,10 +55,26 @@ fn test_names() {
     assert!(!conflicts::name_is_fat_ok("x/y"));
 }
 
-fn test_lock() {
-    let a = crate::log::InstanceLock::acquire().expect("first lock");
-    assert!(crate::log::InstanceLock::acquire().is_err(), "second lock must fail");
-    drop(a);
+fn test_dest_claim() {
+    use crate::log::DestClaim;
+    use std::path::Path;
+    let a = Path::new("/tmp/ft-claim-a");
+    let b = Path::new("/tmp/ft-claim-b");
+    let c1 = DestClaim::acquire(a).expect("first claim");
+    assert!(
+        DestClaim::acquire(a).is_err(),
+        "same destination must conflict"
+    );
+    let c2 = DestClaim::acquire(b).expect("other destination is free");
+    drop(c1);
+    assert!(DestClaim::acquire(a).is_ok(), "claim must be free after drop");
+    // Stale claim file (dead pid) is ignored and cleaned up.
+    let dead = crate::log::state_dir().with_extension("job.4294967295");
+    std::fs::create_dir_all(crate::log::state_base()).unwrap();
+    std::fs::write(&dead, "/tmp/ft-claim-a\n").unwrap();
+    assert!(DestClaim::conflicts(a).is_empty(), "dead pid must not conflict");
+    assert!(!dead.exists(), "stale claim must be removed");
+    drop(c2);
 }
 
 fn tmpdir(tag: &str) -> PathBuf {

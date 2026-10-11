@@ -85,7 +85,6 @@ pub enum Screen {
     Startup,
     Intake,
     Fatal(String),
-    AlreadyRunning,
     Pick,
     Conflicts,
     Transfer,
@@ -102,8 +101,11 @@ pub struct App {
     pub settings: Settings,
     /// "Einstellungen" dialog (verify/autoclose) — open over any screen.
     show_settings: bool,
-    /// Held for the app lifetime: enforces single instance.
-    pub _lock: Option<crate::log::InstanceLock>,
+    /// Claim on the destination currently being written (drop = release).
+    pub claim: Option<crate::log::DestClaim>,
+    /// Live claims of other instances on our destination — blocks begin
+    /// until the user overrides or goes back.
+    pub dest_conflict: Option<Vec<String>>,
     pub startup: Option<Receiver<Result<Vec<SrcInfo>, String>>>,
     /// Result of the intake file dialog (None = cancelled).
     pub picker: Option<Receiver<Option<Vec<PathBuf>>>>,
@@ -191,15 +193,11 @@ impl App {
         cc: &eframe::CreationContext<'_>,
         raw: Vec<PathBuf>,
         startup: Option<Receiver<Result<Vec<SrcInfo>, String>>>,
-        lock: Option<crate::log::InstanceLock>,
     ) -> App {
-        let lock_ok = lock.is_some();
         let dark = system_prefers_dark();
         let pal = if dark { &DARK } else { &LIGHT };
         apply_theme(&cc.egui_ctx, pal, dark);
-        let screen = if !lock_ok {
-            Screen::AlreadyRunning
-        } else if raw.is_empty() {
+        let screen = if raw.is_empty() {
             Screen::Intake
         } else {
             Screen::Startup
@@ -208,7 +206,8 @@ impl App {
             pal,
             settings: Settings::load(),
             show_settings: false,
-            _lock: lock,
+            claim: None,
+            dest_conflict: None,
             startup,
             picker: None,
             dest_picker: None,
@@ -394,8 +393,37 @@ impl App {
         });
     }
 
-    fn begin_transfer(&mut self) {
+    fn begin_transfer(&mut self, force: bool) {
+        let Some(plan) = self.conf.plan.as_ref() else { return };
+        if !force {
+            let others = log::DestClaim::conflicts(&plan.dest);
+            if !others.is_empty() {
+                log::append(&format!(
+                    "dest busy ({} claim(s)): {}",
+                    others.len(),
+                    plan.dest.display()
+                ));
+                self.dest_conflict = Some(others);
+                return;
+            }
+        }
         let Some(plan) = self.conf.plan.take() else { return };
+        // Free our previous claim before re-claiming: the claim file is
+        // per-instance (job.<pid>), so a lingering old claim would fight
+        // with the new one over the same file.
+        self.claim = None;
+        // With `force` (or a race) acquire() errs — the user already saw the
+        // warning, so claim anyway.
+        self.claim = match log::DestClaim::acquire(&plan.dest) {
+            Ok(c) => Some(c),
+            Err(others) => {
+                log::append(&format!(
+                    "claim race: {} other claim(s), claiming anyway",
+                    others.len()
+                ));
+                Some(log::DestClaim::acquire_unchecked(&plan.dest))
+            }
+        };
         log::append(&format!(
             "plan items={} conflicts={} engine={} bytes={} runA={} runB={} verify={}",
             plan.items.len(),
@@ -613,6 +641,8 @@ impl App {
     }
 
     fn goto_summary(&mut self, outcome: Outcome) {
+        // Transfer (and verify) finished — free the destination claim.
+        self.claim = None;
         let elapsed = self
             .xfer
             .elapsed
@@ -727,6 +757,48 @@ impl App {
                 }
             }
             self.show_settings = false;
+        }
+    }
+
+    /// Another live instance is writing to our destination. Warn, let the
+    /// user go back or override. The pending plan stays in `conf.plan`.
+    fn draw_dest_conflict(&mut self, ctx: &Context) {
+        let pal = self.pal;
+        let mut close = false;
+        let mut force = false;
+        egui::Window::new("Ziel wird bereits beschrieben")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.weak(
+                    "Ein anderes Fenster überträgt gerade in denselben Zielordner.",
+                );
+                ui.weak(
+                    "Gleichzeitiges Schreiben kann zu doppelten oder unvollständigen Dateien führen.",
+                );
+                ui.add_space(6.0);
+                if let Some(list) = &self.dest_conflict {
+                    for line in list {
+                        ui.monospace(line);
+                    }
+                }
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if primary_button(ui, pal, "Trotzdem übertragen").clicked() {
+                        force = true;
+                        close = true;
+                    }
+                    if ui.button("Zurück").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if close {
+            self.dest_conflict = None;
+            if force {
+                self.begin_transfer(true);
+            }
         }
     }
 }
@@ -1040,12 +1112,6 @@ impl eframe::App for App {
         match screen {
             Screen::Startup => self.draw_startup(ui, &ctx),
             Screen::Intake => self.draw_intake(ui, &ctx),
-            Screen::AlreadyRunning => self.draw_message(
-                ui,
-                &ctx,
-                "Bereits geöffnet",
-                "Es läuft bereits eine Übertragung.\nBitte warten Sie, bis das andere Fenster fertig ist.",
-            ),
             Screen::Fatal(msg) => {
                 let m = msg.clone();
                 self.draw_message(ui, &ctx, "Fehler", &m);
@@ -1058,6 +1124,9 @@ impl eframe::App for App {
         // Overlay on top of every screen that has the entry button.
         if self.show_settings {
             self.draw_settings_dialog(ui.ctx());
+        }
+        if self.dest_conflict.is_some() {
+            self.draw_dest_conflict(ui.ctx());
         }
     }
 }
@@ -1584,7 +1653,7 @@ impl App {
                         if plan.conflicts.is_empty() {
                             log::append("no conflicts — starting transfer");
                             self.conf.plan = Some(plan);
-                            self.begin_transfer();
+                            self.begin_transfer(false);
                         } else {
                             log::append(&format!("conflicts found: {}", plan.conflicts.len()));
                             self.conf.plan = Some(plan);
@@ -1799,7 +1868,7 @@ impl App {
                     }
                 }
             }
-            self.begin_transfer();
+            self.begin_transfer(false);
         }
         if self.conf.back {
             self.conf.back = false;
