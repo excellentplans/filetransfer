@@ -1,0 +1,17 @@
+[package]
+name = "nascopy"
+version = "1.0.0"
+edition = "2021"
+description = "Datei übertragen … – Dolphin service menu applet: copies selected files to NAS or USB sticks via rsync, FAT32-aware"
+license = "MIT"
+
+[dependencies]
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+egui = "0.36.2"
+libc = "0.2"
+sha2 = "0.11"
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 1
