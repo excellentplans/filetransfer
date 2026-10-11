@@ -502,25 +502,6 @@ fn hash_source_range(src: &mut std::fs::File, offset: u64, len: u64) -> Result<S
     Ok(hex(&h.finalize()))
 }
 
-/// Full SHA-256 of a file (verify pass).
-pub fn sha256_file(p: &Path) -> Result<String, String> {
-    match std::fs::File::open(p) {
-        Ok(mut f) => {
-            let mut h = Sha256::new();
-            let mut buf = vec![0u8; BUF];
-            loop {
-                let n = f.read(&mut buf).map_err(|e| crate::fsutil::ioerr(&e))?;
-                if n == 0 {
-                    break;
-                }
-                h.update(&buf[..n]);
-            }
-            Ok(hex(&h.finalize()))
-        }
-        Err(e) => Err(crate::fsutil::ioerr(&e)),
-    }
-}
-
 // ---------- orchestration ----------
 
 /// Run the whole plan on a worker thread. `cancel` is polled throughout.

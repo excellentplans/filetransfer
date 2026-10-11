@@ -64,7 +64,7 @@ fn main() -> eframe::Result {
 
 fn print_help() {
     println!(
-        "Dateien übertragen (filetransfer) 1.1.0\n\
+        "Dateien übertragen (filetransfer) 1.2.0\n\
          \n\
          Aufruf: filetransfer [DATEIEN …]\n\
          \n\
@@ -75,6 +75,9 @@ fn print_help() {
          Optionen:\n\
            --selftest   Selbsttest ohne GUI (Kopierrunde inkl. FAT32-Zerlegung in /tmp)\n\
            --help       diese Hilfe\n\
+         \n\
+         Einstellungen (Prüfsummen-Prüfung, automatisches Schließen) sind in der\n\
+         App über „Einstellungen …“ erreichbar.\n\
          \n\
          Daten: ~/.local/state/filetransfer.log · filetransfer.last · filetransfer.lock"
     );

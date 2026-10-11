@@ -8,7 +8,7 @@ use crate::fsutil::{self, FsKind, FAT_MAX_FILE};
 use crate::log;
 use crate::state::Settings;
 use crate::transfer::{self, Msg, Outcome, Prog};
-use crate::verify::{self, VerifyReport};
+use crate::verify::{self, VerifyReport, VProg};
 use egui::{Align2, Color32, Context, FontId, Sense, ViewportCommand};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,42 +38,46 @@ struct Palette {
     err: Color32,
     hover: Color32,
     widget: Color32,
+    /// Text color that stays readable on saturated status fills (bars, discs).
+    on_fill: Color32,
 }
 
 const LIGHT: Palette = Palette {
-    panel: Color32::from_rgb(0xFB, 0xFC, 0xFD),
+    panel: Color32::from_rgb(0xF6, 0xF9, 0xFA),
     extreme: Color32::from_rgb(0xFF, 0xFF, 0xFF),
-    faint: Color32::from_rgb(0xF1, 0xF4, 0xF6),
-    text: Color32::from_rgb(0x23, 0x28, 0x2D),
-    muted: Color32::from_rgb(0x5F, 0x6E, 0x78),
-    line: Color32::from_rgb(0xD8, 0xDF, 0xE3),
-    accent: Color32::from_rgb(0x0E, 0x70, 0x86),
+    faint: Color32::from_rgb(0xE8, 0xEE, 0xF1),
+    text: Color32::from_rgb(0x19, 0x1F, 0x23),
+    muted: Color32::from_rgb(0x4A, 0x5A, 0x64),
+    line: Color32::from_rgb(0xB4, 0xC1, 0xC9),
+    accent: Color32::from_rgb(0x07, 0x7D, 0x9C),
     on_accent: Color32::WHITE,
-    accent_soft: Color32::from_rgba_premultiplied(2, 20, 24, 45),
-    verify: Color32::from_rgb(0x2E, 0x6F, 0xB4),
-    ok: Color32::from_rgb(0x2F, 0x8F, 0x5B),
-    warn: Color32::from_rgb(0xA6, 0x6F, 0x14),
-    err: Color32::from_rgb(0xB4, 0x45, 0x3A),
-    hover: Color32::from_rgb(0xE8, 0xEE, 0xF0),
-    widget: Color32::from_rgb(0xED, 0xF1, 0xF3),
+    accent_soft: Color32::from_rgba_premultiplied(10, 125, 156, 34),
+    verify: Color32::from_rgb(0x1B, 0x62, 0xC7),
+    ok: Color32::from_rgb(0x18, 0x9D, 0x53),
+    warn: Color32::from_rgb(0xB2, 0x75, 0x0F),
+    err: Color32::from_rgb(0xC2, 0x3B, 0x2F),
+    hover: Color32::from_rgb(0xDD, 0xE8, 0xEC),
+    widget: Color32::from_rgb(0xE6, 0xED, 0xF0),
+    on_fill: Color32::WHITE,
 };
 
 const DARK: Palette = Palette {
-    panel: Color32::from_rgb(0x2A, 0x2F, 0x33),
-    extreme: Color32::from_rgb(0x1B, 0x1F, 0x21),
-    faint: Color32::from_rgb(0x34, 0x3A, 0x3E),
-    text: Color32::from_rgb(0xE4, 0xE9, 0xEA),
-    muted: Color32::from_rgb(0x98, 0xA5, 0xAB),
-    line: Color32::from_rgb(0x3C, 0x43, 0x47),
-    accent: Color32::from_rgb(0x45, 0xB7, 0xCC),
-    on_accent: Color32::from_rgb(0x10, 0x23, 0x2A),
-    accent_soft: Color32::from_rgba_premultiplied(13, 34, 38, 48),
-    verify: Color32::from_rgb(0x5B, 0x9B, 0xD9),
-    ok: Color32::from_rgb(0x5B, 0xC9, 0x8B),
-    warn: Color32::from_rgb(0xE2, 0xB3, 0x55),
-    err: Color32::from_rgb(0xE5, 0x76, 0x6B),
-    hover: Color32::from_rgb(0x38, 0x3E, 0x42),
-    widget: Color32::from_rgb(0x31, 0x37, 0x3B),
+    panel: Color32::from_rgb(0x26, 0x2C, 0x30),
+    extreme: Color32::from_rgb(0x17, 0x1C, 0x1E),
+    faint: Color32::from_rgb(0x2F, 0x36, 0x3A),
+    text: Color32::from_rgb(0xEE, 0xF3, 0xF4),
+    muted: Color32::from_rgb(0xAB, 0xB8, 0xBE),
+    line: Color32::from_rgb(0x55, 0x61, 0x67),
+    accent: Color32::from_rgb(0x3F, 0xC4, 0xDE),
+    on_accent: Color32::from_rgb(0x0A, 0x21, 0x29),
+    accent_soft: Color32::from_rgba_premultiplied(11, 31, 36, 46),
+    verify: Color32::from_rgb(0x64, 0xAD, 0xEC),
+    ok: Color32::from_rgb(0x40, 0xCF, 0x84),
+    warn: Color32::from_rgb(0xEC, 0xC2, 0x5E),
+    err: Color32::from_rgb(0xF2, 0x7E, 0x73),
+    hover: Color32::from_rgb(0x35, 0x3D, 0x42),
+    widget: Color32::from_rgb(0x2C, 0x33, 0x37),
+    on_fill: Color32::from_rgb(0x0E, 0x1C, 0x22),
 };
 
 #[derive(Clone, PartialEq)]
@@ -96,6 +100,8 @@ pub enum ScanMsg {
 pub struct App {
     pal: &'static Palette,
     pub settings: Settings,
+    /// "Einstellungen" dialog (verify/autoclose) — open over any screen.
+    show_settings: bool,
     pub startup: Option<Receiver<Result<Vec<SrcInfo>, String>>>,
     /// Result of the intake file dialog (None = cancelled).
     pub picker: Option<Receiver<Option<Vec<PathBuf>>>>,
@@ -131,6 +137,11 @@ pub struct ConfState {
     pub plan: Option<Plan>,
     pub apply_all: Option<Policy>,
     pub rename_edits: std::collections::HashMap<usize, String>,
+    /// "Übertragen" clicked — acted on after this frame's draw is complete
+    /// (taking the plan mid-frame would unwrap None below).
+    pub begin: bool,
+    /// "Zurück" clicked — same deferral.
+    pub back: bool,
 }
 
 pub struct XferState {
@@ -150,7 +161,7 @@ pub struct XferState {
     pub copy_done: bool,
     /// Verification running on this screen (second bar).
     pub verify: Option<Receiver<verify::VMsg>>,
-    pub verify_prog: (usize, usize),
+    pub verify_prog: VProg,
     pub verify_report: Option<Result<VerifyReport, String>>,
     /// Moment everything succeeded — drives the completion symbol and the
     /// short hold before the summary appears.
@@ -165,8 +176,12 @@ pub struct SummState {
     pub plan: Plan,
     pub item_outs: Vec<(usize, Result<(), String>, String)>,
     pub verify: Option<Receiver<verify::VMsg>>,
-    pub verify_prog: (usize, usize),
+    pub verify_prog: VProg,
     pub report: Option<Result<VerifyReport, String>>,
+    /// When the summary appeared — grace period before auto-close.
+    pub opened: Instant,
+    /// Auto-close cancelled because the user opened the settings dialog here.
+    pub autoclose_off: bool,
 }
 
 impl App {
@@ -189,6 +204,7 @@ impl App {
         App {
             pal,
             settings: Settings::load(),
+            show_settings: false,
             startup,
             picker: None,
             dest_picker: None,
@@ -215,6 +231,8 @@ impl App {
                 plan: None,
                 apply_all: None,
                 rename_edits: Default::default(),
+                begin: false,
+                back: false,
             },
             xfer: XferState {
                 rx: None,
@@ -231,7 +249,7 @@ impl App {
                 outcome: None,
                 copy_done: false,
                 verify: None,
-                verify_prog: (0, 0),
+                verify_prog: Default::default(),
                 verify_report: None,
                 complete_at: None,
                 elapsed: None,
@@ -243,8 +261,10 @@ impl App {
                 plan: empty_plan(),
                 item_outs: Vec::new(),
                 verify: None,
-                verify_prog: (0, 0),
+                verify_prog: Default::default(),
                 report: None,
+                opened: Instant::now(),
+                autoclose_off: false,
             },
         }
     }
@@ -398,7 +418,7 @@ impl App {
             outcome: None,
             copy_done: false,
             verify: None,
-            verify_prog: (0, 0),
+            verify_prog: Default::default(),
             verify_report: None,
             complete_at: None,
             elapsed: None,
@@ -490,7 +510,7 @@ impl App {
         let mut done = false;
         loop {
             match rx.try_recv() {
-                Ok(verify::VMsg::Prog(d, t)) => self.xfer.verify_prog = (d, t),
+                Ok(verify::VMsg::Prog(p)) => self.xfer.verify_prog = p,
                 Ok(verify::VMsg::Done(res)) => {
                     self.xfer.verify_report = Some(res);
                     done = true;
@@ -574,7 +594,7 @@ impl App {
             outcome: None,
             copy_done: false,
             verify: None,
-            verify_prog: (0, 0),
+            verify_prog: Default::default(),
             verify_report: None,
             complete_at: None,
             elapsed: None,
@@ -594,8 +614,10 @@ impl App {
             plan: std::mem::replace(&mut self.xfer.plan, empty_plan()),
             item_outs: std::mem::take(&mut self.xfer.item_outs),
             verify: None,
-            verify_prog: (0, 0),
+            verify_prog: Default::default(),
             report: self.xfer.verify_report.take(),
+            opened: Instant::now(),
+            autoclose_off: false,
         };
         self.screen = Screen::Summary;
     }
@@ -609,7 +631,7 @@ impl App {
         let mut finished = false;
         loop {
             match rx.try_recv() {
-                Ok(verify::VMsg::Prog(d, t)) => self.summ.verify_prog = (d, t),
+                Ok(verify::VMsg::Prog(p)) => self.summ.verify_prog = p,
                 Ok(verify::VMsg::Done(res)) => {
                     self.summ.report = Some(res);
                     finished = true;
@@ -641,6 +663,61 @@ impl App {
 
     fn close(&self, ctx: &Context) {
         ctx.send_viewport_cmd(ViewportCommand::Close);
+    }
+
+    /// Modal "Einstellungen": verify + auto-close. Reachable from the intake,
+    /// destination picker and summary screens; "Übernehmen" saves immediately.
+    fn draw_settings_dialog(&mut self, ctx: &Context) {
+        let pal = self.pal;
+        let mut verify = self.settings.verify;
+        let mut autoclose = self.settings.autoclose;
+        let mut commit = false;
+        let mut close = false;
+        egui::Window::new("Einstellungen")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.add_space(2.0);
+                ui.checkbox(
+                    &mut verify,
+                    "Prüfsummen nach dem Kopieren vergleichen",
+                );
+                ui.weak(
+                    "Vergleicht nach dem Kopieren jede Datei — dauert länger, stellt aber sicher, dass die Kopie identisch ist.",
+                );
+                ui.add_space(8.0);
+                ui.checkbox(&mut autoclose, "Fenster automatisch schließen");
+                ui.weak(
+                    "Schließt das Fenster, wenn alles erfolgreich übertragen und (falls aktiviert) geprüft ist.",
+                );
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if primary_button(ui, pal, "Übernehmen").clicked() {
+                        commit = true;
+                        close = true;
+                    }
+                    if ui.button("Abbrechen").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if close {
+            if commit {
+                let changed =
+                    self.settings.verify != verify || self.settings.autoclose != autoclose;
+                self.settings.verify = verify;
+                self.settings.autoclose = autoclose;
+                if changed {
+                    self.settings.save();
+                    log::append(&format!(
+                        "settings saved verify={} autoclose={}",
+                        verify as u8, autoclose as u8
+                    ));
+                }
+            }
+            self.show_settings = false;
+        }
     }
 }
 
@@ -758,30 +835,143 @@ fn primary_button(ui: &mut egui::Ui, pal: &Palette, label: &str) -> egui::Respon
     )
 }
 
-/// Completion symbol next to the progress bars: ring while working,
-/// filled disc with a check once everything is done.
-fn draw_complete_symbol(ui: &mut egui::Ui, pal: &Palette, size: f32, done: bool, ring: Color32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), Sense::hover());
-    let pt = ui.painter();
-    let c = rect.center();
-    if done {
-        let r = size * 0.5 - 2.0;
-        pt.circle_filled(c, r, pal.ok);
-        let s = r;
-        let a = egui::pos2(c.x - s * 0.48, c.y + s * 0.06);
-        let b = egui::pos2(c.x - s * 0.10, c.y + s * 0.42);
-        let d = egui::pos2(c.x + s * 0.50, c.y - s * 0.34);
-        let w = s * 0.26;
-        let stroke = egui::Stroke::new(w, pal.on_accent);
-        pt.line_segment([a, b], stroke);
-        pt.line_segment([b, d], stroke);
-        for p in [a, b, d] {
-            pt.circle_filled(p, w * 0.5, pal.on_accent);
-        }
-    } else {
+/// State of a status symbol next to a progress bar.
+#[derive(Clone, Copy, PartialEq)]
+enum SymState {
+    /// Working: faint base ring + colored arc that fills with progress.
+    Run,
+    /// Done and good: filled disc with a check.
+    Ok,
+    /// Done with problems: red disc with a cross.
+    Bad,
+}
+
+/// Status symbol: ring while working (arc fills with `frac`), filled disc
+/// with a check/cross once finished. `label` is drawn centered underneath.
+fn draw_symbol(
+    ui: &mut egui::Ui,
+    pal: &Palette,
+    size: f32,
+    state: SymState,
+    fill: Color32,
+    ring: Color32,
+    frac: Option<f32>,
+    label: &str,
+) {
+    ui.vertical(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), Sense::hover());
+        let pt = ui.painter();
+        let c = rect.center();
         let r = size * 0.5 - 3.0;
-        pt.circle_stroke(c, r, egui::Stroke::new(3.0, ring));
+        match state {
+            SymState::Run => {
+                pt.circle_stroke(c, r, egui::Stroke::new(3.0, pal.line));
+                match frac {
+                    Some(f) => {
+                        let f = f.clamp(0.0, 1.0);
+                        if f > 0.005 {
+                            stroke_arc(pt, c, r, -90.0, -90.0 + 360.0 * f, egui::Stroke::new(3.0, ring));
+                        }
+                    }
+                    None => {
+                        pt.circle_stroke(c, r, egui::Stroke::new(3.0, ring));
+                    }
+                }            }
+            SymState::Ok => {
+                pt.circle_filled(c, r, fill);
+                draw_check(pt, c, r * 0.72, pal.on_fill);
+            }
+            SymState::Bad => {
+                pt.circle_filled(c, r, pal.err);
+                let s = r * 0.45;
+                let stroke = egui::Stroke::new(r * 0.24, pal.on_fill);
+                pt.line_segment([c - egui::vec2(s, s), c + egui::vec2(s, s)], stroke);
+                pt.line_segment([c - egui::vec2(s, -s), c + egui::vec2(s, -s)], stroke);
+            }
+        }
+        if !label.is_empty() {
+            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                let color = if state == SymState::Ok { fill } else { pal.muted };
+                ui.label(egui::RichText::new(label).size(12.0).strong().color(color));
+            });
+        }
+    });
+}
+
+/// Check mark inside a circle of radius `r` around `c`.
+fn draw_check(pt: &egui::Painter, c: egui::Pos2, s: f32, color: Color32) {
+    let a = egui::pos2(c.x - s * 0.62, c.y + s * 0.08);
+    let b = egui::pos2(c.x - s * 0.14, c.y + s * 0.52);
+    let d = egui::pos2(c.x + s * 0.62, c.y - s * 0.42);
+    let w = s * 0.32;
+    let stroke = egui::Stroke::new(w, color);
+    pt.line_segment([a, b], stroke);
+    pt.line_segment([b, d], stroke);
+    for p in [a, b, d] {
+        pt.circle_filled(p, w * 0.5, color);
     }
+}
+
+/// Clockwise arc from `a0` to `a1` degrees (0° = right, -90° = top).
+fn stroke_arc(pt: &egui::Painter, c: egui::Pos2, r: f32, a0: f32, a1: f32, stroke: egui::Stroke) {
+    let steps = ((a1 - a0) / 6.0).ceil().max(1.0) as usize;
+    let mut prev = egui::pos2(
+        c.x + r * a0.to_radians().cos(),
+        c.y + r * a0.to_radians().sin(),
+    );
+    for i in 1..=steps {
+        let a = (a0 + (a1 - a0) * i as f32 / steps as f32).to_radians();
+        let p = egui::pos2(c.x + r * a.cos(), c.y + r * a.sin());
+        pt.line_segment([prev, p], stroke);
+        prev = p;
+    }
+}
+
+/// Progress bar with a visible frame. The label sits centered inside and is
+/// drawn twice — light on the filled part, dark on the rest — so it stays
+/// readable at any fill level.
+fn draw_bar(ui: &mut egui::Ui, pal: &Palette, size: egui::Vec2, frac: f32, fill: Color32, label: &str) {
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let pt = ui.painter();
+    pt.rect_filled(rect, 6, pal.faint);
+    let f = frac.clamp(0.0, 1.0);
+    if f > 0.004 {
+        let w = rect.width() * f;
+        let fill_rect = egui::Rect::from_min_max(rect.left_top(), egui::pos2(rect.left() + w, rect.bottom()));
+        let corners = if f >= 0.995 {
+            egui::CornerRadius::same(6)
+        } else {
+            egui::CornerRadius {
+                nw: 6,
+                sw: 6,
+                ne: 0,
+                se: 0,
+            }
+        };
+        pt.rect_filled(fill_rect, corners, fill);
+    }
+    pt.rect_stroke(rect, 6, egui::Stroke::new(1.4, pal.line), egui::StrokeKind::Inside);
+    if label.is_empty() {
+        return;
+    }
+    let font = FontId::proportional(12.5);
+    // Shrink the label until it fits with padding.
+    let mut text = label.to_string();
+    let mut galley = pt.layout_no_wrap(text.clone(), font.clone(), pal.text);
+    while galley.size().x > rect.width() - 16.0 && text.len() > 4 {
+        text.truncate(text.trim_end().chars().count() - 2);
+        text.push('…');
+        galley = pt.layout_no_wrap(text.clone(), font.clone(), pal.text);
+    }
+    let tp = egui::pos2(
+        rect.center().x - galley.size().x / 2.0,
+        rect.center().y - galley.size().y / 2.0,
+    );
+    let split_x = rect.left() + rect.width() * f;
+    pt.with_clip_rect(egui::Rect::from_min_max(rect.left_top(), egui::pos2(split_x, rect.bottom())))
+        .galley(tp, galley.clone(), pal.on_fill);
+    pt.with_clip_rect(egui::Rect::from_min_max(egui::pos2(split_x, rect.top()), rect.right_bottom()))
+        .galley(tp, galley, pal.text);
 }
 
 /// One clickable row (sidebar locations, folder list) drawn by hand so the
@@ -850,6 +1040,10 @@ impl eframe::App for App {
             Screen::Transfer => self.draw_transfer(ui, &ctx),
             Screen::Summary => self.draw_summary(ui, &ctx),
         }
+        // Overlay on top of every screen that has the entry button.
+        if self.show_settings {
+            self.draw_settings_dialog(ui.ctx());
+        }
     }
 }
 
@@ -896,6 +1090,9 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Schließen").clicked() {
                     self.close(ctx);
+                }
+                if ui.button("Einstellungen …").clicked() {
+                    self.show_settings = true;
                 }
             });
             ui.add_space(8.0);
@@ -1041,6 +1238,9 @@ impl App {
                         log::append("picker cancelled by user");
                         self.close(ctx);
                     }
+                    if ui.button("Einstellungen …").clicked() {
+                        self.show_settings = true;
+                    }
                 });
             });
             ui.add_space(8.0);
@@ -1086,16 +1286,26 @@ impl App {
 
         egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("Ziel auswählen");
+            // The full path list can be very long — cap the mouse-following
+            // tooltip so it can't cover the whole window.
+            let paths: Vec<String> = self
+                .sources_ref()
+                .iter()
+                .map(|s| s.path.display().to_string())
+                .collect();
+            let tip = if paths.len() > 8 {
+                format!(
+                    "{}\n… und {} weitere",
+                    paths[..8].join("\n"),
+                    paths.len() - 8
+                )
+            } else {
+                paths.join("\n")
+            };
             ui.label(
                 egui::RichText::new(sources_summary(self.sources_ref())).weak(),
             )
-            .on_hover_text(
-                self.sources_ref()
-                    .iter()
-                    .map(|s| s.path.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            );
+            .on_hover_text(tip);
             ui.add_space(4.0);
 
             // Last-used shortcut
@@ -1393,25 +1603,13 @@ impl App {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.button("Zurück").clicked() {
-                    self.conf.plan = None;
-                    self.screen = Screen::Pick;
+                    // Defer: taking the plan or leaving this screen mid-frame
+                    // would crash the central-panel pass below.
+                    self.conf.back = true;
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if primary_button(ui, pal, "Übertragen").clicked() {
-                        let edits: Vec<(usize, String)> = self
-                            .conf
-                            .rename_edits
-                            .iter()
-                            .map(|(k, v)| (*k, v.trim().to_string()))
-                            .filter(|(_, v)| !v.is_empty())
-                            .collect();
-                        let plan = self.conf.plan.as_mut().unwrap();
-                        for (idx, name) in edits {
-                            if plan.items[idx].policy == Policy::Rename {
-                                plan.items[idx].dst_name = name;
-                            }
-                        }
-                        self.begin_transfer();
+                        self.conf.begin = true;
                     }
                 });
             });
@@ -1561,6 +1759,32 @@ impl App {
                     });
             });
         });
+
+        // Deferred bottom-bar actions — safe now that the frame is done.
+        if self.conf.begin {
+            self.conf.begin = false;
+            if let Some(plan) = self.conf.plan.as_mut() {
+                let edits: Vec<(usize, String)> = self
+                    .conf
+                    .rename_edits
+                    .iter()
+                    .map(|(k, v)| (*k, v.trim().to_string()))
+                    .filter(|(_, v)| !v.is_empty())
+                    .collect();
+                for (idx, name) in edits {
+                    if plan.items[idx].policy == Policy::Rename {
+                        plan.items[idx].dst_name = name;
+                    }
+                }
+            }
+            self.begin_transfer();
+        }
+        if self.conf.back {
+            self.conf.back = false;
+            self.conf.plan = None;
+            self.conf.rename_edits.clear();
+            self.screen = Screen::Pick;
+        }
     }
 
     // ---------- transfer ----------
@@ -1572,7 +1796,7 @@ impl App {
         // Hold the completed state briefly so the symbol is actually seen,
         // then hand over to the summary.
         if let Some(t) = self.xfer.complete_at {
-            if t.elapsed() >= Duration::from_millis(1400) {
+            if t.elapsed() >= Duration::from_millis(2000) {
                 self.goto_summary(Outcome::Ok);
             }
         }
@@ -1605,21 +1829,30 @@ impl App {
             }
             ui.add_space(10.0);
 
-            // Copy bar (green) + completion symbol — one column, the verify
-            // bar below aligns with it.
-            let sym = 60.0;
-            let col = (ui.available_width() - sym - 12.0).max(160.0);
+            // Copy bar (green) + labeled status symbol — the verify bar below
+            // aligns with the same column.
+            let sym = 46.0;
+            let sym_col = 92.0;
+            let col = (ui.available_width() - sym_col - 8.0).max(180.0);
+            let (copy_frac, copy_text) = copy_progress(&self.xfer);
+            let vfrac = if self.xfer.verify_report.is_some() {
+                1.0
+            } else if self.xfer.verify_prog.total > 0 {
+                (self.xfer.verify_prog.done as f32 / self.xfer.verify_prog.total as f32).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
             ui.horizontal(|ui| {
-                let (frac, text) = copy_progress(&self.xfer);
-                ui.add(
-                    egui::ProgressBar::new(frac)
-                        .desired_width(col)
-                        .desired_height(26.0)
-                        .fill(pal.ok)
-                        .text(text),
-                );
-                let ring = if verifying { pal.verify } else { pal.line };
-                draw_complete_symbol(ui, pal, sym, complete, ring);
+                draw_bar(ui, pal, egui::vec2(col, 30.0), copy_frac, pal.ok, &copy_text);
+                ui.add_space(6.0);
+                let (state, ring, frac, label) = if complete {
+                    (SymState::Ok, pal.ok, None, "Fertig")
+                } else if verifying {
+                    (SymState::Run, pal.verify, Some(vfrac), "Prüfung")
+                } else {
+                    (SymState::Run, pal.ok, Some(copy_frac), "Kopieren")
+                };
+                draw_symbol(ui, pal, sym, state, pal.ok, ring, frac, label);
             });
             ui.add_space(2.0);
 
@@ -1654,11 +1887,12 @@ impl App {
                 }
             }
 
-            // Verification bar (blue), column-aligned below the copy bar.
+            // Verification bar (blue) with its own small status symbol,
+            // column-aligned below the copy bar.
             if verifying || self.xfer.verify_report.is_some() {
-                ui.add_space(10.0);
+                ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let (lrect, _) = ui.allocate_exact_size(egui::vec2(64.0, 20.0), Sense::hover());
+                    let (lrect, _) = ui.allocate_exact_size(egui::vec2(64.0, 22.0), Sense::hover());
                     ui.painter().text(
                         egui::pos2(lrect.left(), lrect.center().y),
                         Align2::LEFT_CENTER,
@@ -1666,21 +1900,49 @@ impl App {
                         FontId::proportional(12.5),
                         pal.muted,
                     );
-                    let (d, t) = self.xfer.verify_prog;
-                    let frac = if t > 0 { d as f32 / t as f32 } else { 0.0 };
-                    let label = if self.xfer.verify_report.is_some() {
-                        "Prüfsummen stimmen überein".to_string()
-                    } else if t > 0 {
-                        format!("{d} von {t} Dateien")
-                    } else {
-                        "Prüfsummen werden verglichen …".to_string()
+                    let vlabel = match &self.xfer.verify_report {
+                        Some(Ok(rep)) if rep.fails.is_empty() => "Prüfsummen stimmen überein".to_string(),
+                        Some(Ok(rep)) => {
+                            format!("{} von {} Dateien weichen ab", rep.fails.len(), rep.total)
+                        }
+                        Some(Err(_)) => "Prüfung abgebrochen".to_string(),
+                        None if self.xfer.verify_prog.total > 0 => {
+                            let speed = if self.xfer.verify_prog.speed.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" — {}", self.xfer.verify_prog.speed)
+                            };
+                            format!(
+                                "{} von {} geprüft{speed}",
+                                fsutil::fmt_size(self.xfer.verify_prog.done),
+                                fsutil::fmt_size(self.xfer.verify_prog.total)
+                            )
+                        }
+                        None => "Prüfsummen werden verglichen …".to_string(),
                     };
-                    ui.add(
-                        egui::ProgressBar::new(frac)
-                            .desired_width((col - 74.0).max(80.0))
-                            .desired_height(20.0)
-                            .fill(pal.verify)
-                            .text(label),
+                    draw_bar(
+                        ui,
+                        pal,
+                        egui::vec2((col - 74.0).max(80.0), 22.0),
+                        vfrac,
+                        pal.verify,
+                        &vlabel,
+                    );
+                    ui.add_space(6.0);
+                    let vstate = match &self.xfer.verify_report {
+                        Some(Ok(rep)) if rep.fails.is_empty() => SymState::Ok,
+                        Some(_) => SymState::Bad,
+                        None => SymState::Run,
+                    };
+                    draw_symbol(
+                        ui,
+                        pal,
+                        22.0,
+                        vstate,
+                        pal.verify,
+                        pal.verify,
+                        if vstate == SymState::Run { Some(vfrac) } else { None },
+                        "",
                     );
                 });
             }
@@ -1731,6 +1993,11 @@ impl App {
         egui::Panel::bottom("summ_bottom").resizable(false).show(ui, |ui| {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
+                if ui.small_button("Einstellungen …").clicked() {
+                    // Manual interaction wins: no sudden auto-close anymore.
+                    self.summ.autoclose_off = true;
+                    self.show_settings = true;
+                }
                 if self.summ.report.is_some() {
                     if ui.small_button("Erneut prüfen").clicked() {
                         self.spawn_verify();
@@ -1835,10 +2102,13 @@ impl App {
             if self.summ.verify.is_some() {
                 ui.horizontal(|ui| {
                     ui.add(egui::Spinner::new().size(18.0));
-                    ui.label(format!(
-                        "Prüfsummen werden verglichen … {} / {}",
-                        self.summ.verify_prog.0, self.summ.verify_prog.1
-                    ));
+                    let p = &self.summ.verify_prog;
+                    let amount = if p.total > 0 {
+                        format!("{} von {}", fsutil::fmt_size(p.done), fsutil::fmt_size(p.total))
+                    } else {
+                        "…".to_string()
+                    };
+                    ui.label(format!("Prüfsummen werden verglichen … {amount}"));
                 });
             } else if let Some(rep) = &self.summ.report {
                 match rep {
@@ -1862,24 +2132,29 @@ impl App {
             } else if !matches!(self.summ.outcome, Outcome::Ok) {
                 // cancelled/failed — no verify options
             } else {
-                ui.checkbox(
-                    &mut self.settings.verify,
-                    "Prüfsummen nach dem Kopieren vergleichen",
+                ui.weak(
+                    "Tipp: Prüfsummen-Prüfung und automatisches Schließen \
+                     stehen in den Einstellungen …",
                 );
             }
-            ui.checkbox(&mut self.settings.autoclose, "Fenster automatisch schließen");
         });
 
-        // auto-close
+        // Auto-close — but only after a short grace period so the summary
+        // (and its settings dialog) stays reachable, and never while the
+        // settings dialog is open or the user interacted with it.
+        let report_ok = self
+            .summ
+            .report
+            .as_ref()
+            .map(|r| r.as_ref().map(|x| x.fails.is_empty()).unwrap_or(true))
+            .unwrap_or(true);
         if self.settings.autoclose
+            && !self.summ.autoclose_off
+            && !self.show_settings
+            && self.summ.opened.elapsed() >= Duration::from_millis(2000)
             && matches!(self.summ.outcome, Outcome::Ok)
             && self.summ.verify.is_none()
-            && self
-                .summ
-                .report
-                .as_ref()
-                .map(|r| r.as_ref().map(|x| x.fails.is_empty()).unwrap_or(true))
-                .unwrap_or(true)
+            && report_ok
         {
             log::append("autoclose");
             self.settings.save();

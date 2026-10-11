@@ -39,14 +39,17 @@ verwendete Ziel des Vorgängers `nascopy`.
    Überschreiben / Umbenennen / Fortsetzen** (bei Teil-Kopie) plus
    „Für alle“. Umbenennen Dolphin-Stil: `name (2).ext`, `name (3).ext` …
 4. **Übertragung**: rsync mit Fortschrittsbalken (grün), Geschwindigkeit,
-   Datei-Zähler und großem Fertig-Symbol. **Abbrechen** bleibt fortsetzbar
+   Datei-Zähler und großem Status-Symbol (Kopieren → Prüfung → grünes
+   „Fertig“-Häkchen). **Abbrechen** bleibt fortsetzbar
    (`--partial --append-verify`).
-5. **Verifizieren** (optional, gemerkter Haken, standardmäßig **an**):
-   während der Prüfung erscheint ein zweiter, blauer Fortschrittsbalken.
-   `rsync -rcn`-Gegenvergleich bzw. SHA-256 für zerlegte Dateien;
-   fehlgeschlagene Dateien können erneut kopiert werden.
-6. **Zusammenfassung** inkl. rsync-Statistik, optional
-   „Fenster automatisch schließen“.
+5. **Verifizieren** (optional, in „Einstellungen …“, standardmäßig **an**):
+   während der Prüfung erscheint ein zweiter, blauer Fortschrittsbalken mit
+   Byte-Fortschritt und einem blauen Häkchen rechts, sobald die Prüfung
+   fertig ist. Jede Datei wird auf beiden Seiten gelesen und per SHA-256
+   verglichen; fehlgeschlagene Dateien können erneut kopiert werden.
+6. **Zusammenfassung** inkl. rsync-Statistik. Der Button **„Einstellungen …“**
+   (Fußleiste von Ablage, Zielwahl und Zusammenfassung) regelt die
+   Prüfsummen-Prüfung und „Fenster automatisch schließen“ dauerhaft.
 
 ## FAT32-Erkennung & Aufteilen großer Videodateien
 
@@ -105,8 +108,8 @@ Kopierrunde (rsync + FAT32-Zerlegung + Fortsetzen + Verify) in /tmp.
    „Für alle“ wirkt.
 5. Fortsetzen: ≥2-GB-Kopie starten, `pkill -f rsync`, erneut starten →
    matched data.
-6. Verify OK: kopierte Datei stimmt; blauer Prüfbalken erscheint während
-   der Prüfung.
+6. Verify OK: kopierte Datei stimmt; blauer Prüfbalken füllt sich mit
+    Byte-Zähler, rechts erscheint ein blaues Häkchen.
 7. Verify FEHLER: Datei am Ziel mit `dd` vermurksen → genau diese Datei
    wird gemeldet.
 8. Abbrechen-Knopf mitten in der Übertragung → partial bleibt,
@@ -114,7 +117,9 @@ Kopierrunde (rsync + FAT32-Zerlegung + Fortsetzen + Verify) in /tmp.
 9. Ziel offline: `sudo umount /mnt/nas` → das Ziel verschwindet aus der
    Seitenleiste; nach dem Remount erscheint es wieder.
 10. Doppelstart → Lock-Hinweis.
-11. Log-Kontrolle in `~/.local/state/filetransfer.log`.
+11. Einstellungen-Dialog: Haken für Prüfung/autoclose setzen und über
+    „Übernehmen“ speichern — Datei `filetransfer.last` prüfen.
+12. Log-Kontrolle in `~/.local/state/filetransfer.log`.
 
 ## Bauen
 

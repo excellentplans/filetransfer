@@ -58,8 +58,11 @@ cp filetransfer.desktop ~/.local/share/kservices5/ServiceMenus/
 kbuildsycoca5
 ```
 
-Screenshot-driven UI review works on this machine: launch the binary, then
-`spectacle -a -n -o /tmp/opencode/shots/x.png`, read the PNG. Kill the
+Screenshot-driven UI review works on this machine — use the background
+mode so no dialog blocks the run: launch the binary, then
+`spectacle -b -n -o /tmp/opencode/shots/x.png` (full screen, no GUI, no
+notification), read the PNG. Mouse clicks/moves for driving the UI can be
+scripted via a tiny XTEST helper compiled ad hoc (`-lX11 -lXtst`). Kill the
 instance before the next run (single-instance lock).
 
 ## Module map
@@ -72,7 +75,7 @@ instance before the next run (single-instance lock).
 | `dest.rs` | location discovery from mountinfo, background listing/mkdir, rfd pickers |
 | `conflicts.rs` | conflict scan → `Plan`, FAT name rules, `unique_name` ("name (2).ext") |
 | `transfer.rs` | rsync process mgmt, `--info=progress2` parser, chunked copy engine, cancel (SIGTERM→SIGKILL) |
-| `verify.rs` | post-copy check: one `rsync -r -c -n` batch + full SHA-256 for engine items |
+| `verify.rs` | post-copy check: every file re-read on both sides, streamed SHA-256 compare with byte-accurate progress (no rsync — its progress2 doesn't tick for single big files) |
 | `fsutil.rs` | statfs probe (`FsKind::Fat/ExFat/Posix`), mountinfo parse, human formatting |
 | `state.rs` | persisted settings `~/.local/state/filetransfer.last` (key=value: dest/verify/autoclose) |
 | `log.rs` | state paths, log, `InstanceLock` |
@@ -90,11 +93,12 @@ Transfer screen specifics (user-requested, **do not "simplify" away**):
 - **Green** copy progress bar with a large painted completion symbol at its
   right (gray ring → blue ring while verifying → green disc + check when
   done). There is deliberately **no ETA/remaining-time display**.
-- **Blue** verification bar appears below while checksums run; verification
-  happens on the transfer screen, not the summary. `Outcome::Ok` + verify
-  enabled → stay on Transfer; after success a ~1.4 s hold (`complete_at`)
-  shows the completed state, then `goto_summary`. The summary receives the
-  verify report prefilled.
+- **Blue** verification bar appears below while checksums run (byte counter
+  + blue check symbol on completion); verification happens on the transfer
+  screen, not the summary. `Outcome::Ok` + verify enabled → stay on
+  Transfer; after success a ~2 s hold (`complete_at`) shows the completed
+  state (green disc + check + „Fertig“), then `goto_summary`. The summary
+  receives the verify report prefilled.
 - Petrol accent = interactive elements only. Green = copy/OK, blue = verify,
   warn/err reserved for status.
 
