@@ -16,7 +16,7 @@ Zwei Wege, es zu benutzen:
 ```sh
 cargo build --release
 cp target/release/filetransfer ~/.local/bin/
-cp filetransfer-servicemenu.desktop ~/.local/share/kservices5/ServiceMenus/   # Pfad in Exec prüfen
+cp filetransfer-servicemenu.desktop ~/.local/share/kservices5/ServiceMenus/   # Dolphin-Kontextmenü
 cp filetransfer.desktop ~/.local/share/applications/                          # Starter/KRunner
 kbuildsycoca5                                                                 # Menü neu einlesen
 ```

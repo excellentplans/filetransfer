@@ -56,13 +56,8 @@ cargo test                   # 26 unit tests
                                            # rsync + FAT32 split + resume + verify in /tmp
 ```
 
-Install (the desktop file hardcodes `/home/erni/.local/bin/filetransfer`):
-
-```sh
-cp target/release/filetransfer ~/.local/bin/
-cp filetransfer.desktop ~/.local/share/kservices5/ServiceMenus/
-kbuildsycoca5
-```
+Install: follow the **Installation** section in `README.md` — it is the
+single source of truth for install steps and target paths.
 
 Screenshot-driven UI review works on this machine — use the background
 mode so no dialog blocks the run: launch the binary, then
